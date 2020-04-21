@@ -41,6 +41,8 @@ const char* password = "password";
 ESP8266WiFiMulti wifiMulti;
 
 const char* host = "wall-e";
+const String title = "Husqarna Automower 310";
+//const String title = "Automower Gardena R40li";
 const String noResponse = "no response";
 
 ESP8266WebServer server(80);
@@ -1089,7 +1091,7 @@ String GetHtmlBodyWeb(String logcontent)
   String s = "<body>";
   s += "  <div class='content'>";
   s += "    <h1>Wall&bull;E</h1>";
-  s += "    <p>Automower Gardena R40li</p>";
+  s += "    <p>"+title+"</p>";
   s += "    <form action='/action'>";
   s += "      <input type='submit' name='action' value='START' /><br>";
   s += "      <input type='submit' name='action' value='STOP' /><br>";
@@ -1147,7 +1149,7 @@ String GetHtmlBodyRoot()
   String s = "<body>";
   s += "  <div class='content'>";  
   s += "    <h1>Wall&bull;E</h1>";
-  s += "    <p>Automower Gardena R40li</p>";
+  s += "    <p>"+title+"</p>";
   s += "    <br>";
   s += "    Requests:<br>";
   s += "    <div class='box'>";
