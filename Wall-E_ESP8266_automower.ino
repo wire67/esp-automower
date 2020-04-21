@@ -63,6 +63,17 @@ static char buf[20];
 static char topic[50];
 #endif
 
+//***********************************************************************
+//***  OTA-Update  *****************************************************
+//***********************************************************************
+#define WITH_OTA
+#ifdef WITH_OTA
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
+const char* OTA_Hostname = "Automower";
+const char* OTA_Password = "12345";
+#endif
+
 char ChrDummy[] = "FF";
 int IntDummy;
 bool isStarted = false;
@@ -134,8 +145,39 @@ void setup() {
   server.begin();
   MDNS.addService("http", "tcp", 80);
   Serial.printf("HTTPUpdateServer ready! Open http://%s.local/update in your browser\n", host);
-}
 
+  #ifdef WITH_OTA
+  ArduinoOTA.setPassword(OTA_Password);
+  ArduinoOTA.onStart([]() {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH) {
+      type = "sketch";
+    } else { // U_FS
+      type = "filesystem";
+    }
+    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
+    Log("OTA-Update: Start updating " + type);
+  });
+  ArduinoOTA.onEnd([]() {
+    Log("OTA-Update: Done!");
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) {
+      Log("Error on OTA-Update: Auth Failed");
+    } else if (error == OTA_BEGIN_ERROR) {
+      Log("Error on OTA-Update: Begin Failed");
+    } else if (error == OTA_CONNECT_ERROR) {
+      Log("Error on OTA-Update: Connect Failed");
+    } else if (error == OTA_RECEIVE_ERROR) {
+      Log("Error on OTA-Update: Receive Failed");
+    } else if (error == OTA_END_ERROR) {
+      Log("Error on OTA-Update: End Failed");
+    }
+  });
+  ArduinoOTA.begin();
+  #endif
+  
   //Init MQTT Client
   #ifdef WITH_MQTT
   client.setServer(mqtt_server, mqtt_port);
@@ -168,6 +210,17 @@ void loop(void)
   server.handleClient();
   MDNS.update();
   wifiMulti.run();
+  #ifdef WITH_OTA
+  ArduinoOTA.handle();
+  #endif
+  
+  //MQTT Loop
+  #ifdef WITH_MQTT
+  if (!client.connected()) {
+    reconnect();
+  }
+  client.loop();
+  #endif
 }
 
 void UpdateStatus()
