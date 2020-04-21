@@ -45,6 +45,24 @@ const String noResponse = "no response";
 ESP8266WebServer server(80);
 ESP8266HTTPUpdateServer httpUpdater;
 
+//***********************************************************************
+//***  MQTT-Client  *****************************************************
+//***********************************************************************
+#define WITH_MQTT
+
+#ifdef WITH_MQTT
+#include <PubSubClient.h>
+WiFiClient MqttClient;
+PubSubClient client(MqttClient);
+const char* mqtt_server = "10.20.30.40";   	// defines the IP of the MQTT-Broker
+const int   mqtt_port = 1883;             	// defines the PORT of the MQTT-Broker (standard = 1883)
+const char* mqtt_user = "user";    			// defines the USERNAME for the MQTT-Broker
+const char* mqtt_password = "password";     // defines the PASSWORD for the MQTT-Broker
+const String main_topic = "Automower";    	// defines the main topic 
+static char buf[20];
+static char topic[50];
+#endif
+
 char ChrDummy[] = "FF";
 int IntDummy;
 bool isStarted = false;
@@ -118,6 +136,13 @@ void setup() {
   Serial.printf("HTTPUpdateServer ready! Open http://%s.local/update in your browser\n", host);
 }
 
+  //Init MQTT Client
+  #ifdef WITH_MQTT
+  client.setServer(mqtt_server, mqtt_port);
+  client.setCallback(callback);
+  #endif
+}
+
 //***********************************************************************
 //*** loop  *************************************************************
 //***********************************************************************
@@ -129,6 +154,9 @@ void loop(void)
   {
     previousMillisStatus = currentMillis;
     UpdateStatus();
+    #ifdef WITH_MQTT
+    publish_mower_values();
+    #endif
     rssi = String(WiFi.RSSI());
     ssid = String(WiFi.SSID());
   }
@@ -1208,3 +1236,134 @@ String GetTestResponse(String name)
   else
     return "";
 }
+
+//***********************************************************************
+//*** MQTT  *************************************************************
+//***********************************************************************
+
+#ifdef WITH_MQTT
+void callback(char* gottopic, byte* payload, unsigned int length) {
+  String str = String(); 
+  String("0").toCharArray(buf, 10);   
+  for (int i = 0; i < length; i++) {
+    str += (char)payload[i];
+  }
+  String mytopic = (main_topic + "/cmnd/home");
+  mytopic.toCharArray(topic, 50);
+  if(strcmp(gottopic, topic) == 0 & str == "1") {
+    ExecuteSerialCommand("HOME");    
+    client.publish(topic, buf);
+  }
+  mytopic = (main_topic + "/cmnd/manual");
+  mytopic.toCharArray(topic, 50);
+  if(strcmp(gottopic, topic) == 0 & str == "1") {
+    ExecuteSerialCommand("MAN");
+    client.publish(topic, buf);
+  }
+  mytopic = (main_topic + "/cmnd/automatic");
+  mytopic.toCharArray(topic, 50);
+  if(strcmp(gottopic, topic) == 0 & str == "1") {
+    ExecuteSerialCommand("AUTO");
+    client.publish(topic, buf);
+  }
+  mytopic = (main_topic + "/cmnd/start");
+  mytopic.toCharArray(topic, 50);
+  if(strcmp(gottopic, topic) == 0 & str == "1") {
+    ExecuteSerialCommand("START");
+    client.publish(topic, buf);
+  }
+  mytopic = (main_topic + "/cmnd/stop");
+  mytopic.toCharArray(topic, 50);
+  if(strcmp(gottopic, topic) == 0 & str == "1") {
+    ExecuteSerialCommand("STOP");
+    client.publish(topic, buf);
+  }
+}
+
+void reconnect() {  
+  while (!client.connected()) {
+    // Attempt to connect
+    if (client.connect(host, mqtt_user, mqtt_password)) {
+      // Once connected, publish an announcement...
+      publish_mower_values();
+      // ... and resubscribe
+
+      String mytopic = (main_topic + "/cmnd/home");
+      mytopic.toCharArray(topic, 50);
+      client.subscribe(topic);
+      mytopic = (main_topic + "/cmnd/manual");
+      mytopic.toCharArray(topic, 50);
+      client.subscribe(topic);
+      mytopic = (main_topic + "/cmnd/automatic");
+      mytopic.toCharArray(topic, 50);
+      client.subscribe(topic);
+      mytopic = (main_topic + "/cmnd/start");
+      mytopic.toCharArray(topic, 50);
+      client.subscribe(topic);
+      mytopic = (main_topic + "/cmnd/stop");
+      mytopic.toCharArray(topic, 50);
+      client.subscribe(topic);
+//    } else {
+//      // Wait 5 seconds before retrying
+//      delay(5000);
+    }    
+  }
+}
+
+void publish_mower_values() {
+  String(mower).toCharArray(buf, 10);
+  String mytopic = (main_topic + "/stat/status");
+  mytopic.toCharArray(topic, 50);
+  client.publish(topic, buf);
+   
+  String(cover).toCharArray(buf, 10);
+  mytopic = (main_topic + "/stat/cover");
+  mytopic.toCharArray(topic, 50);
+  client.publish(topic, buf);
+
+  String(nextstart).toCharArray(buf, 10);
+  mytopic = (main_topic + "/stat/nextstart");
+  mytopic.toCharArray(topic, 50);
+  client.publish(topic, buf);
+   
+  String(timer1).toCharArray(buf, 10);
+  mytopic = (main_topic + "/stat/timer1");
+  mytopic.toCharArray(topic, 50);
+  client.publish(topic, buf);
+
+  String(timer2).toCharArray(buf, 10);
+  mytopic = (main_topic + "/stat/timer2");
+  mytopic.toCharArray(topic, 50);
+  client.publish(topic, buf);
+   
+  String(batteryvoltage).toCharArray(buf, 10);
+  mytopic = (main_topic + "/stat/batteryvoltage");
+  mytopic.toCharArray(topic, 50);
+  client.publish(topic, buf);
+  
+  String(batterycapacity).toCharArray(buf, 10);
+  mytopic = (main_topic + "/stat/batterycapacity");
+  mytopic.toCharArray(topic, 50);
+  client.publish(topic, buf);
+
+  String(flowingcurrent).toCharArray(buf, 10);
+  mytopic = (main_topic + "/stat/flowingcurrent");
+  mytopic.toCharArray(topic, 50);
+  client.publish(topic, buf);
+   
+  String(temperature).toCharArray(buf, 10);
+  mytopic = (main_topic + "/stat/temperature");
+  mytopic.toCharArray(topic, 50);
+  client.publish(topic, buf);
+  
+  String(rssi).toCharArray(buf, 10);
+  mytopic = (main_topic + "/stat/rssi");
+  mytopic.toCharArray(topic, 50);
+  client.publish(topic, buf); 
+    
+  String(ssid).toCharArray(buf, 10);
+  mytopic = (main_topic + "/stat/ssid");
+  mytopic.toCharArray(topic, 50);
+  client.publish(topic, buf); 
+}
+#endif
