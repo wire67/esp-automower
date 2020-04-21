@@ -17,6 +17,7 @@
 #define PrgVer 1.12  // Revise timer status
 #define PrgVer 1.13  // Use DHCP instead of static ip
 #define PrgVer 1.14  // Insert refresh button, reactivate and modify timer
+#define PrgVer 1.15  // add OTA, add MQTT, add wifiMulti, add links on index page
 
 
 #include <ESP8266WiFi.h>
