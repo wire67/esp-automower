@@ -21,9 +21,11 @@
 
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
-#include <WiFiClient.h>
+//#include <WiFiClient.h>
+#include <ESP8266WiFiMulti.h>
 #include <ESP8266mDNS.h>
 #include <ESP8266HTTPUpdateServer.h>
+
 
 //***********************************************************************
 //***  Deklaration  *****************************************************
@@ -31,8 +33,11 @@
 
 boolean DebugOn = false;
 
-const char* ssid = "meinwlan";
-const char* password = "meinpasswort";
+const char* ssid1 = "ssid1";
+const char* ssid2 = "ssid2";
+const char* ssid3 = "ssid3";
+const char* password = "password";
+ESP8266WiFiMulti wifiMulti;
 
 const char* host = "wall-e";
 const String noResponse = "no response";
@@ -73,6 +78,7 @@ String flowingcurrent = noResponse;
 String temperature = noResponse;
 String ipAdress = noResponse;
 String rssi = noResponse;
+String ssid = noResponse;
 
 //***********************************************************************
 //*** setup  ************************************************************
@@ -81,10 +87,15 @@ String rssi = noResponse;
 void setup() {
   isStarted = true;
   Serial.begin(115200);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
+  wifiMulti.addAP(ssid1, password);
+  wifiMulti.addAP(ssid2, password);
+  wifiMulti.addAP(ssid3, password);
+//  wifiMulti.hostname(host);
+//  WiFi.mode(WIFI_STA);
+//  WiFi.hostname(host);
+//  WiFi.begin(ssid, password);
   
-  while (WiFi.status() != WL_CONNECTED)
+  while (wifiMulti.run() != WL_CONNECTED)
   {
     delay(500);
   }
@@ -119,6 +130,7 @@ void loop(void)
     previousMillisStatus = currentMillis;
     UpdateStatus();
     rssi = String(WiFi.RSSI());
+    ssid = String(WiFi.SSID());
   }
   if (currentMillis - previousMillisTimer >= updateIntervalTimer * 1000)
   {
@@ -127,6 +139,7 @@ void loop(void)
   }
   server.handleClient();
   MDNS.update();
+  wifiMulti.run();
 }
 
 void UpdateStatus()
@@ -268,6 +281,7 @@ void handleWeb() {
 	html.replace("%%temperature%%", temperature);
 	html.replace("%%ip%%", ipAdress);
 	html.replace("%%rssi%%", rssi);
+	html.replace("%%ssid%%", ssid);
   
   server.send(200, "text/html", html);
 }
@@ -1012,6 +1026,7 @@ String GetHtmlBodyWeb(String logcontent)
   s += "        <tr><td>Date</td><td>%%date%%</td></tr>";
   s += "        <tr><td>IP</td><td>%%ip%%</td></tr>";
   s += "        <tr><td>Wifi RSSI</td><td>%%rssi%% dB</td></tr>";
+  s += "        <tr><td>Wifi SSID</td><td>%%ssid%%</td></tr>";
   s += "      </table>";
   s += "    </div>";
   s += "    <br>";
@@ -1129,6 +1144,7 @@ String GetJson()
   s += "\"temperature\":\"" + temperature + " " + (char)176 + "C\",";
   s += "\"ipAdress\":\"" + ipAdress + "\",";
   s += "\"rssi\":\"" + rssi + " db\"";
+  s += "\"ssid\":\"" + ssid + "\"";
   s += "}";
   return s;
 }
