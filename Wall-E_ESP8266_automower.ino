@@ -62,7 +62,7 @@ const int   mqtt_port = 1883;             	// defines the PORT of the MQTT-Broke
 const char* mqtt_user = "user";    			// defines the USERNAME for the MQTT-Broker
 const char* mqtt_password = "password";     // defines the PASSWORD for the MQTT-Broker
 const String main_topic = "Automower";    	// defines the main topic 
-static char buf[20];
+static char buf[25];
 static char topic[50];
 #endif
 
@@ -1305,7 +1305,7 @@ String GetTestResponse(String name)
 #ifdef WITH_MQTT
 void callback(char* gottopic, byte* payload, unsigned int length) {
   String str = String(); 
-  String("0").toCharArray(buf, 10);   
+  String("0").toCharArray(buf, 25);   
   for (int i = 0; i < length; i++) {
     str += (char)payload[i];
   }
@@ -1372,57 +1372,57 @@ void reconnect() {
 }
 
 void publish_mower_values() {
-  String(mower).toCharArray(buf, 10);
+  String(mower).toCharArray(buf, 25);
   String mytopic = (main_topic + "/stat/status");
   mytopic.toCharArray(topic, 50);
   client.publish(topic, buf);
    
-  String(cover).toCharArray(buf, 10);
+  String(cover).toCharArray(buf, 25);
   mytopic = (main_topic + "/stat/cover");
   mytopic.toCharArray(topic, 50);
   client.publish(topic, buf);
 
-  String(nextstart).toCharArray(buf, 10);
+  String(nextstart).toCharArray(buf, 25);
   mytopic = (main_topic + "/stat/nextstart");
   mytopic.toCharArray(topic, 50);
   client.publish(topic, buf);
    
-  String(timer1).toCharArray(buf, 10);
+  String(timer1).toCharArray(buf, 25);
   mytopic = (main_topic + "/stat/timer1");
   mytopic.toCharArray(topic, 50);
   client.publish(topic, buf);
 
-  String(timer2).toCharArray(buf, 10);
+  String(timer2).toCharArray(buf, 25);
   mytopic = (main_topic + "/stat/timer2");
   mytopic.toCharArray(topic, 50);
   client.publish(topic, buf);
    
-  String(batteryvoltage).toCharArray(buf, 10);
+  String(batteryvoltage).toCharArray(buf, 25);
   mytopic = (main_topic + "/stat/batteryvoltage");
   mytopic.toCharArray(topic, 50);
   client.publish(topic, buf);
   
-  String(batterycapacity).toCharArray(buf, 10);
+  String(batterycapacity).toCharArray(buf, 25);
   mytopic = (main_topic + "/stat/batterycapacity");
   mytopic.toCharArray(topic, 50);
   client.publish(topic, buf);
 
-  String(flowingcurrent).toCharArray(buf, 10);
+  String(flowingcurrent).toCharArray(buf, 25);
   mytopic = (main_topic + "/stat/flowingcurrent");
   mytopic.toCharArray(topic, 50);
   client.publish(topic, buf);
    
-  String(temperature).toCharArray(buf, 10);
+  String(temperature).toCharArray(buf, 25);
   mytopic = (main_topic + "/stat/temperature");
   mytopic.toCharArray(topic, 50);
   client.publish(topic, buf);
   
-  String(rssi).toCharArray(buf, 10);
+  String(rssi).toCharArray(buf, 25);
   mytopic = (main_topic + "/stat/rssi");
   mytopic.toCharArray(topic, 50);
   client.publish(topic, buf); 
     
-  String(ssid).toCharArray(buf, 10);
+  String(ssid).toCharArray(buf, 25);
   mytopic = (main_topic + "/stat/ssid");
   mytopic.toCharArray(topic, 50);
   client.publish(topic, buf); 
