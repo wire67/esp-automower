@@ -473,6 +473,9 @@ String GetMowerHomeManAutoResponse()
 String GetMowerStatusText()
 {
   String response = ExecuteSerialCommand("STATUS");
+  if(response.length() == 0)
+    return noResponse;
+    
   return GetMowerStatusText(response);
 }
 
@@ -537,6 +540,9 @@ String GetMowerStatusText(String hexResponse)
 String GetCoverStatusText()
 {
   String response = ExecuteSerialCommand("COVER");
+  if(response.length() == 0)
+    return noResponse;
+
   return GetCoverStatusText(response);
 }
 
@@ -553,10 +559,10 @@ String GetCoverStatusText(String hexResponse)
 String GetTime()
 {
   String response = ExecuteSerialCommand("CLOCK");
-  if(response.length() > 0)
-	  return GetTime(response);
-  else
+  if(response.length() == 0)
 	  return noResponse;
+
+  return GetTime(response);
 }
 
 String GetTime(String hexResponse)
@@ -586,10 +592,10 @@ String GetTime(String hexResponse)
 String GetDate()
 {
   String response = ExecuteSerialCommand("DATE");
-  if(response.length() > 0)
-	  return GetDate(response);
-  else
+  if(response.length() == 0)
 	  return noResponse;
+	
+  return GetDate(response);
 }
 
 String GetDate(String hexResponse)
