@@ -776,19 +776,18 @@ String ExecuteSerialCommand(String name)
 
 String ExecuteSerialCommand(String cmd, String name)
 {
-  String response = "";
 	for(int i = 0; i < trials; i++)
 	{
     if(i > 0)
       delay(delayValue);
 		WriteSerialCommand(cmd);
-		response = ReadSerialResponse(name);
+		String response = ReadSerialResponse(name);
 		if(IsValid(response))
-      break;
-    else
-      Log("Invalid response (" + name + " " + cmd +" -> " +response+ ")");
+      return response;
+
+    Log("Invalid response (" + name + " " + cmd +" -> " +response+ ")");
 	}
-  return response;
+  return "";
 }
 
 
@@ -814,7 +813,6 @@ void ClearSerialBuffer()
 
 bool WaitforSerial(unsigned int bytes, unsigned int timeout)
 {
-
     unsigned long now= millis();
 
     while ( (millis() - now) < timeout)
