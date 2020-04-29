@@ -812,33 +812,43 @@ void ClearSerialBuffer()
   } while (Serial.available() > 0);
 }
 
+bool WaitforSerial(unsigned int bytes, unsigned int timeout)
+{
+
+    unsigned long now= millis();
+
+    while ( (millis() - now) < timeout)
+    {
+      if (Serial.available() >= bytes)
+        return true;
+      server.handleClient();
+    }
+    return false;
+}
+
 String ReadSerialResponse(String name)
 {
     if(DebugOn)
       return GetTestResponse(name);
     
     String response = "";
-    String separator = "";
-    bool started = false;
-    int counter = 0;
-    for (int i = 0; i < 1000; i++)
-    {
-      int c = Serial.read();
-      if (c >= 0 && c <= 255)
-      {
-        started = true;
-        counter = 0;
-        response = response + separator + int2hex(c, 2);
-        separator = "-";
-      }
-      else if(started)
-      {
-        if(counter == 20)
-          break;
-        counter++;
-      }
-      delay(1);
+    String separator = "-";
+
+    if (!WaitforSerial(3,1000) ) return ("timeout1"); // wait for first 3 bytes to come
+
+    response =  int2hex(Serial.read(), 2); // start byte
+    response += separator + int2hex(Serial.read(), 2); // command byte
+    char payload  = Serial.read();
+    response += separator + int2hex(payload, 2); // length
+
+    if (!WaitforSerial(payload+2,1000) ) return ("timeout2" + response);
+    for (int i = 0; i< payload; i++){
+      response += separator + int2hex(Serial.read(), 2); // payload
     }
+
+    response += separator + int2hex(Serial.read(), 2); // crc
+    response += separator + int2hex(Serial.read(), 2); // end byte
+
     return response;
 }
 
