@@ -794,6 +794,7 @@ String ExecuteSerialCommand(String cmd, String name)
 
 void WriteSerialCommand(String cmd)
 {
+  ClearSerialBuffer();
   do
   {
     cmd.substring(0, 2).toCharArray(ChrDummy, 3);
@@ -801,6 +802,14 @@ void WriteSerialCommand(String cmd)
     cmd = cmd.substring(3, cmd.length());
     Serial.write(IntDummy);
   } while (cmd.length() > 1);
+}
+
+void ClearSerialBuffer()
+{
+  do
+  { 
+    t = Serial.read();
+  } while (Serial.available() > 0);
 }
 
 String ReadSerialResponse(String name)
