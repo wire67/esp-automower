@@ -18,7 +18,7 @@
 #define PrgVer 1.13  // Use DHCP instead of static ip
 #define PrgVer 1.14  // Insert refresh button, reactivate and modify timer
 #define PrgVer 1.15  // add OTA, add MQTT, add wifiMulti, add links on index page
-#define PrgVer 1.16  // Add mowerName, mowerType, new error codes for Gardena R70li, AutoCrc option, workdays2, modify timer from website, automation extension
+#define PrgVer 1.16  // Add mowerName, mowerType, new error codes for Gardena R70li, AutoCrc option, workdays2, modify timer from website, automation extension, lastLogEntry in JSON
 
 
 #include <ESP8266WiFi.h>
@@ -1527,6 +1527,20 @@ String GetLogContent()
   return content;
 }
 
+String GetLastLogEntry()
+{
+  String logEntry = "no entry";
+  int index = logCounter - 1;
+  if (index < 0)
+    index += logs;
+  String text = logArrayMsg[index];
+  String date = logArrayDate[index];
+  if (text.length() > 0)
+    logEntry = "(" + date + ") " + text;
+
+  return logEntry;
+}
+
 String GetJson()
 {
   String s = "";
@@ -1544,6 +1558,7 @@ String GetJson()
   s += "\"batterycapacity\":\"" + batterycapacity + " mAh\",";
   s += "\"flowingcurrent\":\"" + flowingcurrent + " mA\",";
   s += "\"temperature\":\"" + temperature + " " + (char)176 + "C\",";
+  s += "\"lastlogentry\":\"" + GetLastLogEntry() + "\",";
   s += "\"ipAdress\":\"" + ipAdress + "\",";
   s += "\"rssi\":\"" + rssi + " db\"";
   s += "\"ssid\":\"" + ssid + "\"";
