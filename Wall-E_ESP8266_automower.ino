@@ -60,7 +60,7 @@ const int automationCheckTimer = 60; // seconds
 //***********************************************************************
 //***  MQTT-Client  *****************************************************
 //***********************************************************************
-//#define WITH_MQTT
+#define WITH_MQTT
 
 #ifdef WITH_MQTT
 #include <PubSubClient.h>
