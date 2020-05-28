@@ -1554,9 +1554,9 @@ String GetHtmlBodyRoot()
   s += "      To start the mower, use the command 'MOWTODAY'. If the mower is active and it starts raining, let your automation send 'MOWNEXTDAY' to set Timer2Start to the following day. The mower returns and starts the next day. To remove all days from Timer2, use 'ABORTDAYS'.</br>";
   s += "      The commands are executed via http://" + ipAdress + "/send?automation=MOWTODAY";
   s += "      <table class='status'>";
-  s += "        <tr><td>MOWTODAY</td><td>Sets day of Timer2Start to today.</td></tr>";
-  s += "        <tr><td>MOWNEXTDAY</td><td>Sets day of Timer2Start to tomorrow.</td></tr>";
-  s += "        <tr><td>ABORTDAYS</td><td>Removes all days of Timer2Start.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?automation=MOWTODAY'>MOWTODAY</a></td><td>Sets day of Timer2Start to today.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?automation=MOWNEXTDAY'>MOWNEXTDAY</a></td><td>Sets day of Timer2Start to tomorrow.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?automation=ABORTDAYS'>ABORTDAYS</a></td><td>Removes all days of Timer2Start.</td></tr>";
   s += "      </table>";
   s += "    </div>";
 #endif
