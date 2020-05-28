@@ -19,6 +19,7 @@
 #define PrgVer 1.14  // Insert refresh button, reactivate and modify timer
 #define PrgVer 1.15  // add OTA, add MQTT, add wifiMulti, add links on index page
 #define PrgVer 1.16  // Add mowerName, mowerType, new error codes for Gardena R70li, AutoCrc option, workdays2, modify timer from website, automation extension, lastLogEntry in JSON
+#define PrgVer 1.17  // Optimize automation program (remove workingdays of Timer2 at end of Timer2), update all values at start, add links of commands to webpage
 
 
 #include <ESP8266WiFi.h>
@@ -54,12 +55,12 @@ ESP8266HTTPUpdateServer httpUpdater;
 //***  AUTOMATION  ******************************************************
 //***********************************************************************
 #define WITH_AUTOMATION
-int automationStartTimer = 1020; // seconds
+const int automationCheckTimer = 60; // seconds
 
 //***********************************************************************
 //***  MQTT-Client  *****************************************************
 //***********************************************************************
-#define WITH_MQTT
+//#define WITH_MQTT
 
 #ifdef WITH_MQTT
 #include <PubSubClient.h>
@@ -120,8 +121,10 @@ String temperature = noResponse;
 String ipAdress = noResponse;
 String rssi = noResponse;
 String ssid = noResponse;
+unsigned long previousMillisAutomation = millis();
 unsigned long startupMillis;
 bool automationStartedMower = false;
+bool automationAbortDays = false;
 
 //***********************************************************************
 //*** setup  ************************************************************
@@ -198,10 +201,18 @@ void setup() {
   client.setCallback(callback);
 #endif
 
+  // Get current status
+  for (int i = 0; i <= 5; i++)
+  {
+    UpdateTimer();
+  }
+  UpdateStatus();
+
   //Init automation mode
 #ifdef WITH_AUTOMATION
   //Send mower initially to stop (mower is started by external automation)
   ExecuteSerialCommand("STOP");
+  Log("AUTOMATION stopped mower");
   startupMillis = millis();
 #endif
 }
@@ -245,12 +256,10 @@ void loop(void)
 
   //Automation
 #ifdef WITH_AUTOMATION
-  //Set mower to start before falling asleep
-  if (automationStartedMower == false && (currentMillis - startupMillis >= automationStartTimer * 1000))
+  if (currentMillis - previousMillisAutomation >= automationCheckTimer * 1000)
   {
-    ExecuteSerialCommand("START");
-    Log("AUTOMATION start mower");
-    automationStartedMower = true;
+    previousMillisAutomation = currentMillis;
+    UpdateAutomationStatus();
   }
 #endif
 }
@@ -298,6 +307,34 @@ void UpdateTimer()
   jobFlagTimer++;
   if (jobFlagTimer > 5)
     jobFlagTimer = 0;
+}
+
+void UpdateAutomationStatus()
+{
+  int currentHour = Time.substring(0, 2).toInt();
+  int currentMinute = Time.substring(3, 5).toInt();
+
+  int timer2EndHour = timer2.substring(8, 10).toInt();
+  int timer2EndMinute = timer2.substring(11, 13).toInt();
+
+  //Remove working days at the end of Timer2 (otherwise mower might not start the next day)
+  if (automationAbortDays == false && (currentHour >= timer2EndHour && currentMinute >= timer2EndMinute))
+  {
+    String output;
+    String cmd = executeAutomationCommands("ABORTDAYS", output);
+    automationAbortDays = true;
+  }
+
+  int timer1EndHour = timer1.substring(8, 10).toInt();
+  int timer1EndMinute = timer1.substring(11, 13).toInt();
+
+  //Set mower to start before falling asleep
+  if (automationStartedMower == false && (currentHour >= timer1EndHour && currentMinute >= timer1EndMinute))
+  {
+    ExecuteSerialCommand("START");
+    Log("AUTOMATION started mower");
+    automationStartedMower = true;
+  }
 }
 
 void Log(String text)
@@ -380,59 +417,7 @@ void handleSend() {
   else if (server.hasArg("automation"))
   {
     name = server.arg("automation");
-
-    String date = GetDate(ExecuteSerialCommand("DATE"));
-
-    int dateDay = date.substring(0, 2).toInt();
-    int dateMonth = date.substring(3, 5).toInt();
-    int dateYear = date.substring(6, 10).toInt();
-    int h = dateMonth + 12;
-    int k = dateYear - 1;
-
-    if (dateMonth > 2)
-    {
-      h = dateMonth;
-      k = dateYear;
-    }
-
-    int dateWeekday = (dateDay + 2 * h + (3 * h + 3) / 5 + k + k / 4 - k / 100 + k / 400 + 1) % 7;
-    String timer2Start = ExecuteSerialCommand("TIMER2START");
-    //Stop mower to change timer
-    String stopAnswer = ExecuteSerialCommand("STOP");
-
-    if (name.equals("MOWTODAY"))
-    {
-      cmd = "02-06-08-02-02-" + timer2Start.substring(15, 24) + weekDay2Hex(dateWeekday) + "-A0-05";
-      cmd = setCmdCrC(cmd);
-      output += "CMD: " + cmd + "\r\n";
-      output += "Response: " + ExecuteSerialCommand(cmd, "MOWTODAY") + "\r\n";
-    }
-    else if (name.equals("MOWNEXTDAY"))
-    {
-      if (dateWeekday < 6)
-        dateWeekday += 1;
-      else dateWeekday = 0;
-
-      cmd = "02-06-08-02-02-" + timer2Start.substring(15, 24) + weekDay2Hex(dateWeekday) + "-A0-05";
-      cmd = setCmdCrC(cmd);
-      output += "CMD: " + cmd + "\r\n";
-      output += "Response: " + ExecuteSerialCommand(cmd, "MOWNEXTDAY") + "\r\n";
-    }
-    else if (name.equals("ABORTDAYS"))
-    {
-      String timer2Start = ExecuteSerialCommand("TIMER2START");
-      cmd = "02-06-08-02-02-" + timer2Start.substring(15, 24) + "00-A0-05";
-      cmd = setCmdCrC(cmd);
-      output += "CMD: " + cmd + "\r\n";
-      output += "Response: " + ExecuteSerialCommand(cmd, "ABORTDAYS") + "\r\n";
-    }
-    else
-    {
-      output = "Wrong command for 'automation'";
-    }
-    //Start mower
-    name = "START";
-    cmd = GetMowerCommand(name);
+    cmd = executeAutomationCommands(name, output);
   }
 
   if (cmd.length() > 0)
@@ -442,6 +427,77 @@ void handleSend() {
   if (output.length() == 0)
     output += "No response from mower.";
   server.send(200, "text/plain", output);
+}
+
+String executeAutomationCommands(String cmdName, String &output)
+{
+  String cmd;
+  String date = GetDate(ExecuteSerialCommand("DATE"));
+
+  int dateDay = date.substring(0, 2).toInt();
+  int dateMonth = date.substring(3, 5).toInt();
+  int dateYear = date.substring(6, 10).toInt();
+  int h = dateMonth + 12;
+  int k = dateYear - 1;
+
+  if (dateMonth > 2)
+  {
+    h = dateMonth;
+    k = dateYear;
+  }
+
+  int dateWeekday = (dateDay + 2 * h + (3 * h + 3) / 5 + k + k / 4 - k / 100 + k / 400 + 1) % 7;
+  String timer2Start = ExecuteSerialCommand("TIMER2START");
+  //Stop mower to change timer
+  String stopAnswer = ExecuteSerialCommand("STOP");
+
+  if (cmdName.equals("MOWTODAY"))
+  {
+    cmd = "02-06-08-02-02-" + timer2Start.substring(15, 24) + weekDay2Hex(dateWeekday) + "-A0-05";
+    cmd = setCmdCrC(cmd);
+    output += "CMD: " + cmd + "\r\n";
+    output += "Response: " + ExecuteSerialCommand(cmd, "MOWTODAY") + "\r\n";
+    Log("AUTOMATION started mower to mow today");
+  }
+  else if (cmdName.equals("MOWNEXTDAY"))
+  {
+    if (dateWeekday < 6)
+      dateWeekday += 1;
+    else dateWeekday = 0;
+
+    cmd = "02-06-08-02-02-" + timer2Start.substring(15, 24) + weekDay2Hex(dateWeekday) + "-A0-05";
+    cmd = setCmdCrC(cmd);
+    output += "CMD: " + cmd + "\r\n";
+    output += "Response: " + ExecuteSerialCommand(cmd, "MOWNEXTDAY") + "\r\n";
+    Log("AUTOMATION returned mower to mow tomorrow");
+  }
+  else if (cmdName.equals("MOWALLDAYS"))
+  {
+    cmd = "02-06-08-02-02-" + timer2Start.substring(15, 24) + "-7F-A0-05";
+    cmd = setCmdCrC(cmd);
+    output += "CMD: " + cmd + "\r\n";
+    output += "Response: " + ExecuteSerialCommand(cmd, "MOWNEXTDAY") + "\r\n";
+    Log("AUTOMATION set Timer2 to all workingsdays (Mo-Su)");
+  }
+  else if (cmdName.equals("ABORTDAYS"))
+  {
+    String timer2Start = ExecuteSerialCommand("TIMER2START");
+    cmd = "02-06-08-02-02-" + timer2Start.substring(15, 24) + "00-A0-05";
+    cmd = setCmdCrC(cmd);
+    output += "CMD: " + cmd + "\r\n";
+    output += "Response: " + ExecuteSerialCommand(cmd, "ABORTDAYS") + "\r\n";
+    Log("AUTOMATION removed all workingdays of Timer2");
+  }
+  else
+  {
+    output = "Wrong command for 'automation'";
+  }
+
+  //Start mower
+  cmdName = "START";
+  cmd = GetMowerCommand(cmdName);
+
+  return cmd;
 }
 
 String setCmdCrC(String cmd)
@@ -1020,7 +1076,7 @@ String ReadSerialResponse(String name)
   char payload  = Serial.read();
   response += separator + int2hex(payload, 2); // length
 
-  if (!WaitforSerial(payload + 2, 1000) ) return ("timeout2" + response);
+  if (!WaitforSerial(payload + 2, 1000) ) return ("timeout2 " + response);
   for (int i = 0; i < payload; i++) {
     response += separator + int2hex(Serial.read(), 2); // payload
   }
@@ -1465,21 +1521,23 @@ String GetHtmlBodyRoot()
   s += "    <div class='box'>";
   s += "      Pre-defined commands for the mower";
   s += "      <table class='status'>";
-  s += "        <tr><td>START</td><td>Starts the mower, when stopped.</td></tr>";
-  s += "        <tr><td>STOP</td><td>Stops the mower while mowing.</td></tr>";
-  s += "        <tr><td>HOME</td><td>Sends the mower to the charging station.</td></tr>";
-  s += "        <tr><td>MAN</td><td>The mower starts when it is out on the lawn, it will mow until the battery runs out.</td></tr>";
-  s += "        <tr><td>AUTO</td><td>The standard, automatic operation mode where the mower mows and charges automatically.</td></tr>";
-  s += "        <tr><td>STATUS</td><td>Retrieves the status of the mower like parked, charging, mowing, searching or error.</td></tr>";
-  s += "        <tr><td>COVER</td><td>Retrieves the status of the cover, whether open or closed.</td></tr>";
-  s += "        <tr><td>BATTERY</td><td>Retrieves battery information like voltage, capacity or flowing current.</td></tr>";
-  s += "        <tr><td>CLOCK</td><td>Retrieves the current time.</td></tr>";
-  s += "        <tr><td>DATE</td><td>Retrieves the current date.</td></tr>";
-  s += "        <tr><td>TIMER1START</td><td>Retrieves the start time of Timer1</td></tr>";
-  s += "        <tr><td>TIMER1STOP</td><td>Retrieves the stop time of Timer1</td></tr>";
-  s += "        <tr><td>TIMER2START</td><td>Retrieves the start time of Timer2</td></tr>";
-  s += "        <tr><td>TIMER2STOP</td><td>Retrieves the stop time of Timer2</td></tr>";
-  s += "        <tr><td>NEXT</td><td>Retrieves the date and time of next start.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=START'>START</a></td><td>Starts the mower, when stopped.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=STOP'>STOP</a></td><td>Stops the mower while mowing.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=HOME'>HOME</a></td><td>Sends the mower to the charging station.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=MAN'>MAN</a></td><td>The mower starts when it is out on the lawn, it will mow until the battery runs out.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=AUTO'>AUTO</a></td><td>The standard, automatic operation mode where the mower mows and charges automatically.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=STATUS'>STATUS</a></td><td>Retrieves the status of the mower like parked, charging, mowing, searching or error.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=COVER'>COVER</a></td><td>Retrieves the status of the cover, whether open or closed.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=BATTERY'>BATTERY</a></td><td>Retrieves battery information like voltage, capacity or flowing current.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=CLOCK'>CLOCK</a></td><td>Retrieves the current time.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=DATE'>DATE</a></td><td>Retrieves the current date.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=TIMER1START'>TIMER1START</a></td><td>Retrieves the start time of Timer1</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=TIMER1STOP'>TIMER1STOP</a></td><td>Retrieves the stop time of Timer1</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=WORKINGDAYS1'>WORKINGDAYS1</a></td><td>Retrieves the working days of Timer1</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=TIMER2START'>TIMER2START</a></td><td>Retrieves the start time of Timer2</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=TIMER2STOP'>TIMER2STOP</a></td><td>Retrieves the stop time of Timer2</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=WORKINGDAYS2'>WORKINGDAYS2</a></td><td>Retrieves the working days of Timer2</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=NEXT'>NEXT</a></td><td>Retrieves the date and time of next start.</td></tr>";
   s += "      </table>";
   s += "    </div>";
 #ifdef WITH_AUTOMATION
