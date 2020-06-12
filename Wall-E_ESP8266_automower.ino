@@ -20,6 +20,7 @@
 #define PrgVer 1.15  // add OTA, add MQTT, add wifiMulti, add links on index page
 #define PrgVer 1.16  // Add mowerName, mowerType, new error codes for Gardena R70li, AutoCrc option, workdays2, modify timer from website, automation extension, lastLogEntry in JSON
 #define PrgVer 1.17  // Optimize automation program (remove workingdays of Timer2 at end of Timer2), update all values at start, add links of commands to webpage
+#define PrgVer 1.18  // Bugfix: only remove workingdays of Timer2 at end of Timer2 when mower is charging (otherwise mower might stop and not return)
 
 
 #include <ESP8266WiFi.h>
@@ -318,7 +319,7 @@ void UpdateAutomationStatus()
   int timer2EndMinute = timer2.substring(11, 13).toInt();
 
   //Remove working days at the end of Timer2 (otherwise mower might not start the next day)
-  if (automationAbortDays == false && (currentHour >= timer2EndHour && currentMinute >= timer2EndMinute))
+  if (automationAbortDays == false && (mower.indexOf("charging") > 0) && (currentHour >= timer2EndHour && currentMinute >= timer2EndMinute))
   {
     String output;
     String cmd = executeAutomationCommands("ABORTDAYS", output);
