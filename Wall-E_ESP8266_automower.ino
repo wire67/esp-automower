@@ -20,7 +20,8 @@
 #define PrgVer 1.15  // add OTA, add MQTT, add wifiMulti, add links on index page
 #define PrgVer 1.16  // Add mowerName, mowerType, new error codes for Gardena R70li, AutoCrc option, workdays2, modify timer from website, automation extension, lastLogEntry in JSON
 #define PrgVer 1.17  // Optimize automation program (remove workingdays of Timer2 at end of Timer2), update all values at start, add links of commands to webpage
-#define PrgVer 1.18  // Bugfix: only remove workingdays of Timer2 at end of Timer2 when mower is charging (otherwise mower might stop and not return)
+#define PrgVer 1.18  // Fix bug (only remove workingdays of Timer2 at end of Timer2 when mower is charging) (Thanks to Rob R.)
+#define PrgVer 1.19  // Fix bug (temperature >25,5C not shown), added battery charge in percent, added workinghours (Thanks to jackmaniels)
 
 
 #include <ESP8266WiFi.h>
@@ -88,6 +89,7 @@ const char* OTA_Password = "12345";
 #endif
 
 char ChrDummy[] = "FF";
+char ChrDummy2[] = "FF";
 int IntDummy;
 bool isStarted = false;
 
@@ -115,10 +117,12 @@ String timer1 = noResponse;
 String workingdays1 = noResponse;
 String timer2 = noResponse;
 String workingdays2 = noResponse;
+String batterycharge = noResponse;
 String batteryvoltage = noResponse;
 String batterycapacity = noResponse;
 String flowingcurrent = noResponse;
 String temperature = noResponse;
+String workinghours = noResponse;
 String ipAdress = noResponse;
 String rssi = noResponse;
 String ssid = noResponse;
@@ -540,10 +544,12 @@ void handleWeb() {
   html.replace("%%workingdays1%%", workingdays1);
   html.replace("%%timer2%%", timer2);
   html.replace("%%workingdays2%%", workingdays2);
+  html.replace("%%batterycharge%%", batterycharge);
   html.replace("%%batteryvoltage%%", batteryvoltage);
   html.replace("%%batterycapacity%%", batterycapacity);
   html.replace("%%flowingcurrent%%", flowingcurrent);
   html.replace("%%temperature%%", temperature);
+  html.replace("%%workinghours%%", workinghours);
   html.replace("%%ip%%", ipAdress);
   html.replace("%%rssi%%", rssi);
   html.replace("%%ssid%%", ssid);
@@ -677,6 +683,19 @@ String GetMowerStatusText(String hexResponse)
   String byte6 = GetByteFromHexString(hexResponse, 6);
   String byte7 = GetByteFromHexString(hexResponse, 7);
   String byte8 = GetByteFromHexString(hexResponse, 8);
+
+  //Get workinghours
+  String byte19 = GetByteFromHexString(hexResponse, 19);
+  String byte20 = GetByteFromHexString(hexResponse, 20);
+  String hexString = byte20 + byte19;
+  hexString.toCharArray(ChrDummy, hexString.length() + 1);
+  workinghours = hex2int(ChrDummy, hexString.length());
+
+  //Get battery charge in percent
+  String byte21 = GetByteFromHexString(hexResponse, 21);
+  byte21.toCharArray(ChrDummy, byte21.length() + 1);
+  batterycharge = hex2int(ChrDummy, byte21.length());
+
   String text = "";
   if (byte4.equals("01"))
   {
@@ -740,8 +759,11 @@ String GetMowerStatusText(String hexResponse)
       text += " (mower tilted [33])";
     else if ((byte6.equals("05") && byte7.equals("21") && byte8.equals("27")) ||
              (byte6.equals("05") && byte7.equals("22") && byte8.equals("27")) ||  // Gardena R70li
+             (byte6.equals("05") && byte7.equals("01") && byte8.equals("00")) ||  // Gardena R70li
              (byte6.equals("05") && byte7.equals("02") && byte8.equals("00")) ||  // Gardena R70li
-             (byte6.equals("05") && byte7.equals("01") && byte8.equals("00")))    // Gardena R70li
+             (byte6.equals("05") && byte7.equals("12") && byte8.equals("00")) ||  // Gardena R70li
+             (byte6.equals("05") && byte7.equals("12") && byte8.equals("27")) ||  // Gardena R70li
+             (byte6.equals("08") && byte7.equals("20") && byte8.equals("00")))    // Gardena R70li
       text += " (mower lifted [15])";
     else if (byte6.equals("07") && byte7.equals("12") && byte8.equals("00"))
       text += " (blades blocked)";
@@ -971,8 +993,10 @@ double GetBatteryFlowingCurrentInMilliAmpere(String hexResponse)
 double GetBatteryTemperature(String hexResponse)
 {
   String byte10 = GetByteFromHexString(hexResponse, 10);
+  String byte11 = GetByteFromHexString(hexResponse, 11);
   byte10.toCharArray(ChrDummy, byte10.length() + 1);
-  return (double)hex2int(ChrDummy, byte10.length()) / 10.0;
+  byte11.toCharArray(ChrDummy2, byte11.length() + 1);
+  return ((double)hex2int(ChrDummy2, byte11.length()) * 25.5) + ((double)hex2int(ChrDummy, byte10.length()) / 10.0);
 }
 
 String GetByteFromHexString(String asciiHex, int index)
@@ -1443,6 +1467,7 @@ String GetHtmlBodyWeb(String logcontent)
   s += "        <tr><td>Cover</td><td>%%cover%%</td></tr>";
   s += "        <tr><td>Time</td><td>%%time%%</td></tr>";
   s += "        <tr><td>Date</td><td>%%date%%</td></tr>";
+  s += "        <tr><td>Workinghours</td><td>%%workinghours%%</td></tr>";
   s += "        <tr><td>IP</td><td>%%ip%%</td></tr>";
   s += "        <tr><td>Wifi RSSI</td><td>%%rssi%% dB</td></tr>";
   s += "        <tr><td>Wifi SSID</td><td>%%ssid%%</td></tr>";
@@ -1475,8 +1500,8 @@ String GetHtmlBodyWeb(String logcontent)
   s += "    Battery:<br>";
   s += "    <div class='box'>";
   s += "      <table class='battery'>";
-  s += "        <tr><th>Volt</th><th>mAh</th><th>mA</th><th>&deg;C</th></tr>";
-  s += "        <tr><td>%%batteryvoltage%%</td><td>%%batterycapacity%%</td><td>%%flowingcurrent%%</td><td>%%temperature%%</td></tr>";
+  s += "        <tr><th>Volt</th><th>mAh</th><th>%</th><th>mA</th><th>&deg;C</th></tr>";
+  s += "        <tr><td>%%batteryvoltage%%</td><td>%%batterycapacity%%</td><td>%%batterycharge%%</td><td>%%flowingcurrent%%</td><td>%%temperature%%</td></tr>";
   s += "      </table>";
   s += "    </div>";
   s += "    <br>";
@@ -1551,8 +1576,8 @@ String GetHtmlBodyRoot()
   s += "      Set Timer2Start to e.g. start at <span class='cmdHour'>10</span>:<span class='cmdMinute'>10</span> - <span class='cmdDays'>without days</span> (http://" + ipAdress + "/send?cmd=02-06-08-02-02-<span class='cmdHour'>0A</span>-00-<span class='cmdMinute'>0A</span>-<span class='cmdDays'>00</span>-A0-05-B3-03)</br>";
   s += "      Set Timer2Stop to e.g. stop <span class='cmdDays'>every day</span> at <span class='cmdHour'>20</span>:<span class='cmdMinute'>00</span> (http://" + ipAdress + "/send?cmd=02-06-08-02-82-<span class='cmdHour'>14</span>-00-<span class='cmdMinute'>00</span>-<span class='cmdDays'>7F</span>-A0-05-46-03)</br>";
   s += "      The mower has to be set to AUTO and started manually. When the mower wakes up because of Timer1Start, it is automatically send to STOP via this program and waits for further commands.</br>";
-  s += "      When no command was sent from an automation (e.g. FHEM, OpenHAB, Loxone, etc.), the mower is set to START after a specific time - by default 17min (can be changed via internal variable 'automationStartTimer'). Therefore keep the period of Timer1 below this time to avoid the mower to start mowing. Keep in mind that the mower goes to sleep after ~30min.</br>";
-  s += "      To start the mower, use the command 'MOWTODAY'. If the mower is active and it starts raining, let your automation send 'MOWNEXTDAY' to set Timer2Start to the following day. The mower returns and starts the next day. To remove all days from Timer2, use 'ABORTDAYS'.</br>";
+  s += "      When no command was sent from an automation (e.g. FHEM, OpenHAB, Loxone, etc.), the mower is set to START after the end of Timer1End.</br>";
+  s += "      To start the mower, use the command 'MOWTODAY'. If the mower is active and it starts raining, let your automation send 'MOWNEXTDAY' to set Timer2Start to the following day. The mower returns and starts the next day. When the mower returns to charge and Timer2End passes, the command 'ABORTDAYS' is executed to remove all workingdays of Timer2.</br>";
   s += "      The commands are executed via http://" + ipAdress + "/send?automation=MOWTODAY";
   s += "      <table class='status'>";
   s += "        <tr><td><a href='http://" + ipAdress + "/send?automation=MOWTODAY'>MOWTODAY</a></td><td>Sets day of Timer2Start to today.</td></tr>";
@@ -1613,10 +1638,12 @@ String GetJson()
   s += "\"workingdays1\":\"" + workingdays1 + "\",";
   s += "\"timer2\":\"" + timer2 + "\",";
   s += "\"workingdays2\":\"" + workingdays2 + "\",";
+  s += "\"batterycharge\":\"" + batterycharge + " %\",";
   s += "\"batteryvoltage\":\"" + batteryvoltage + " V\",";
   s += "\"batterycapacity\":\"" + batterycapacity + " mAh\",";
   s += "\"flowingcurrent\":\"" + flowingcurrent + " mA\",";
   s += "\"temperature\":\"" + temperature + " " + (char)176 + "C\",";
+  s += "\"workinghours\":\"" + workinghours + " h\",";
   s += "\"lastlogentry\":\"" + GetLastLogEntry() + "\",";
   s += "\"ipAdress\":\"" + ipAdress + "\",";
   s += "\"rssi\":\"" + rssi + " db\"";
@@ -1786,6 +1813,11 @@ void publish_mower_values() {
   mytopic.toCharArray(topic, 50);
   client.publish(topic, buf);
 
+  String(batterycharge).toCharArray(buf, 25);
+  mytopic = (main_topic + "/stat/batterycharge");
+  mytopic.toCharArray(topic, 50);
+  client.publish(topic, buf);
+
   String(batteryvoltage).toCharArray(buf, 25);
   mytopic = (main_topic + "/stat/batteryvoltage");
   mytopic.toCharArray(topic, 50);
@@ -1803,6 +1835,11 @@ void publish_mower_values() {
 
   String(temperature).toCharArray(buf, 25);
   mytopic = (main_topic + "/stat/temperature");
+  mytopic.toCharArray(topic, 50);
+  client.publish(topic, buf);
+
+  String(workinghours).toCharArray(buf, 25);
+  mytopic = (main_topic + "/stat/workinghours");
   mytopic.toCharArray(topic, 50);
   client.publish(topic, buf);
 
