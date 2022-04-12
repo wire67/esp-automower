@@ -22,14 +22,17 @@
 #define PrgVer 1.17  // Optimize automation program (remove workingdays of Timer2 at end of Timer2), update all values at start, add links of commands to webpage
 #define PrgVer 1.18  // Fix bug (only remove workingdays of Timer2 at end of Timer2 when mower is charging) (Thanks to Rob R.)
 #define PrgVer 1.19  // Fix bug (temperature >25,5C not shown), added battery charge in percent, added workinghours (Thanks to jackmaniels)
-
+#define PrgVer 1.20  // Included WLAN manager, Relay reset switch on D1 (Wemos relay board) and reset procedure for the esp board (RCOOLEN)
 
 #include <ESP8266WiFi.h>
+#include <strings_en.h>
+#include <WiFiManager.h>
 #include <ESP8266WebServer.h>
 //#include <WiFiClient.h>
 #include <ESP8266WiFiMulti.h>
 #include <ESP8266mDNS.h>
 #include <ESP8266HTTPUpdateServer.h>
+
 
 
 //***********************************************************************
@@ -53,6 +56,14 @@ const String noResponse = "no response";
 ESP8266WebServer server(80);
 ESP8266HTTPUpdateServer httpUpdater;
 
+
+//***********************************************************************
+//***  WAKEUP Relay  ****************************************************
+//***********************************************************************
+
+int Relay_PIN = D1;
+
+
 //***********************************************************************
 //***  AUTOMATION  ******************************************************
 //***********************************************************************
@@ -62,7 +73,7 @@ const int automationCheckTimer = 60; // seconds
 //***********************************************************************
 //***  MQTT-Client  *****************************************************
 //***********************************************************************
-#define WITH_MQTT
+//#define WITH_MQTT
 
 #ifdef WITH_MQTT
 #include <PubSubClient.h>
@@ -135,21 +146,58 @@ bool automationAbortDays = false;
 //*** setup  ************************************************************
 //***********************************************************************
 
-void setup() {
+void setup() 
+{
+    WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
+    // it is a good practice to make sure your code sets wifi mode how you want it.
+
+    // put your setup code here, to run once:
+    Serial.begin(115200);
+    
+    //WiFiManager, Local intialization. Once its business is done, there is no need to keep it around
+    WiFiManager wm;
+
+    // reset settings - wipe stored credentials for testing
+    // these are stored by the esp library
+    // wm.resetSettings();
+
+    // Automatically connect using saved credentials,
+    // if connection fails, it starts an access point with the specified name ( "Wall-E"),
+    // if empty will auto generate SSID, if password is blank it will be anonymous AP (wm.autoConnect())
+    // then goes into a blocking loop awaiting configuration and will return success result
+
+    bool res;
+    // res = wm.autoConnect(); // auto generated AP name from chipid
+    // res = wm.autoConnect("Wall-E"); // anonymous ap
+    res = wm.autoConnect("Wall-E","123456789"); // password protected ap
+
+    if(!res) {
+        Serial.println("Failed to connect");
+        ESP.restart(); // restart the module if connection fails
+    } 
+    else {
+        //if you get here you have connected to the WiFi    
+        Serial.println("connected...yeey :)");
+    }
+
+
+
   isStarted = true;
-  Serial.begin(115200);
-  wifiMulti.addAP(ssid1, password);
-  wifiMulti.addAP(ssid2, password);
-  wifiMulti.addAP(ssid3, password);
+//  Serial.begin(115200);
+//  WiFi.softAP("ssid","password");
+//  wifiMulti.addAP(ssid1, password);
+//  wifiMulti.addAP(ssid2, password);
+//  wifiMulti.addAP(ssid3, password);
   //  wifiMulti.hostname(host);
   //  WiFi.mode(WIFI_STA);
   //  WiFi.hostname(host);
   //  WiFi.begin(ssid, password);
 
-  while (wifiMulti.run() != WL_CONNECTED)
-  {
-    delay(500);
-  }
+//  while (wifiMulti.run() != WL_CONNECTED)
+//  while (WiFi.status() != WL_CONNECTED) {
+//    delay(500);
+//    Serial.println("Connecting to WiFi..");
+//   }
   server.begin();
 
   server.on("/", handleRoot);
@@ -167,6 +215,10 @@ void setup() {
   server.begin();
   MDNS.addService("http", "tcp", 80);
   Serial.printf("HTTPUpdateServer ready! Open http://%s.local/update in your browser\n", host);
+
+// Initialise Relay_PIN
+  pinMode(Relay_PIN, OUTPUT); // Initialise the Relay_PIN pin as an output
+  digitalWrite(Relay_PIN, LOW);
 
 #ifdef WITH_OTA
   ArduinoOTA.setPassword(OTA_Password);
@@ -658,6 +710,25 @@ String GetMowerCommand(String name)
     return "02-06-02-01-02-3E-03";
   else if (name.equals("NEXT"))
     return "02-06-01-05-2A-03";
+  else if (name.equals("WAKEUP"))
+  {
+    digitalWrite(Relay_PIN, HIGH);
+    delay(1000);                    
+    digitalWrite(Relay_PIN, LOW);  
+    return "Mower wakeup or reset performed";
+  }
+  else if (name.equals("RESET"))
+  {
+    ESP.restart(); 
+    return "WIFI Module reset performed";
+  }
+  else if (name.equals("CLEARCREDS"))
+  {
+    WiFiManager wm;
+    wm.resetSettings();
+    ESP.restart(); 
+    return "WIFI Credentials cleared";
+  }
   else
     return "";
 }
@@ -1458,6 +1529,11 @@ String GetHtmlBodyWeb(String logcontent)
   s += "      <input type='submit' name='action' value='HOME' /><br>";
   s += "      <input type='submit' name='action' value='MAN' /><br>";
   s += "      <input type='submit' name='action' value='AUTO' /><br>";
+  s += "      <br>"; 
+  s += "    Management Options:<br>";
+  s += "      <button type='submit' name='action' value='WAKEUP'>Reset or wakeup Mower</button><br>";
+  s += "      <button type='submit' name='action' value='RESET'>Restart WIFI Module</button><br>";
+  s += "      <button type='submit' name='action' value='CLEARCREDS'>Clear WIFI Credentials</button><br>";
   s += "    </form>";
   s += "    <br>";
   s += "    Status:<br>";
@@ -1552,6 +1628,9 @@ String GetHtmlBodyRoot()
   s += "        <tr><td><a href='http://" + ipAdress + "/send?name=HOME'>HOME</a></td><td>Sends the mower to the charging station.</td></tr>";
   s += "        <tr><td><a href='http://" + ipAdress + "/send?name=MAN'>MAN</a></td><td>The mower starts when it is out on the lawn, it will mow until the battery runs out.</td></tr>";
   s += "        <tr><td><a href='http://" + ipAdress + "/send?name=AUTO'>AUTO</a></td><td>The standard, automatic operation mode where the mower mows and charges automatically.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=WAKEUP'>WAKEUP</a></td><td>Triggers a wakeup pulse for the mower via the relay board attached to the reset contact on the main board.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=RESET'>RESET</a></td><td>Restarts the wireless module.</td></tr>";
+  s += "        <tr><td><a href='http://" + ipAdress + "/send?name=CLEARCREDS'>CLEARCREDS</a></td><td>Clears the stored WIFI credentials and restarts wifi module.</td></tr>";
   s += "        <tr><td><a href='http://" + ipAdress + "/send?name=STATUS'>STATUS</a></td><td>Retrieves the status of the mower like parked, charging, mowing, searching or error.</td></tr>";
   s += "        <tr><td><a href='http://" + ipAdress + "/send?name=COVER'>COVER</a></td><td>Retrieves the status of the cover, whether open or closed.</td></tr>";
   s += "        <tr><td><a href='http://" + ipAdress + "/send?name=BATTERY'>BATTERY</a></td><td>Retrieves battery information like voltage, capacity or flowing current.</td></tr>";
@@ -1710,6 +1789,12 @@ String GetTestResponse(String name)
     return "02-07-09-00-02-11-00-05-35-3E-01-01-1A-03";
   else if (name.equals("NEXT"))
     return "02-07-0A-00-00-00-00-00-00-70-BC-C8-55-C5-03";
+  else if (name.equals("WAKEUP"))
+    return "Wakeup signal sent...";
+  else if (name.equals("RESET"))
+    return "Module reset command sent...Rebooting...";
+  else if (name.equals("CLEARCREDS"))
+    return "Wifi Credentials cleared... Rebooting...";  
   else
     return "";
 }
