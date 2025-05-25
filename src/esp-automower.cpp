@@ -1,0 +1,2356 @@
+#include <Arduino.h>
+#include <time.h>
+#include "_credentials.h"
+
+//***********************************************************************
+//***  Programm-Version  ************************************************
+//***********************************************************************
+
+// #define PrgVer 1.00  // Vorlage ESP8266_Robi_v2.ino
+// #define PrgVer 1.01  // Refactoring
+// #define PrgVer 1.02  // Web Interface HTML
+// #define PrgVer 1.03  // Predefined commands
+// #define PrgVer 1.04  // Compilable version
+// #define PrgVer 1.05  // Responsive web interface
+// #define PrgVer 1.06  // Added timer, working days, next start
+// #define PrgVer 1.07  // Validate command response (CRC8) and use timer
+// #define PrgVer 1.08  // Logging
+// #define PrgVer 1.09  // Modifiable timer settings
+// #define PrgVer 1.10  // WebUpdater
+// #define PrgVer 1.11  // Revise battery status
+// #define PrgVer 1.12  // Revise timer status
+// #define PrgVer 1.13  // Use DHCP instead of static ip
+// #define PrgVer 1.14  // Insert refresh button, reactivate and modify timer
+// #define PrgVer 1.15  // add OTA, add MQTT, add wifiMulti, add links on index page
+// #define PrgVer 1.16  // Add mowerName, mowerType, new error codes for Gardena R70li, AutoCrc option, workdays2, modify timer from website, automation extension, lastLogEntry in JSON
+// #define PrgVer 1.17  // Optimize automation program (remove workingdays of Timer2 at end of Timer2), update all values at start, add links of commands to webpage
+// #define PrgVer 1.18  // Fix bug (only remove workingdays of Timer2 at end of Timer2 when mower is charging) (Thanks to Rob R.)
+// #define PrgVer 1.19  // Fix bug (temperature >25,5C not shown), added battery charge in percent, added workinghours (Thanks to jackmaniels)
+// #define PrgVer 1.20  // Included WLAN manager, Relay reset switch on D1 (Wemos relay board) and reset procedure for the esp board (RCOOLEN)
+#define PrgVer 1.22  // Added Power Outage status (hex 08), Added mode sensor (auto/man/home), support ESP32, support for Home Assistant, set NTP time once
+
+#if defined(ESP8266)
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <ESP8266mDNS.h>
+#include <ESP8266HTTPUpdateServer.h>
+#include <SoftwareSerial.h>
+#elif defined(ESP32)
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
+#include <BLEDevice.h>
+#include <BLEAdvertising.h>
+#else
+#error "Unsupported board: this project supports ESP8266 and ESP32."
+#endif
+
+// #include <strings_en.h>
+#include <WiFiManager.h>
+#include <Ticker.h>
+
+//***********************************************************************
+//***  Deklaration  *****************************************************
+//***********************************************************************
+
+boolean DebugOn = false;
+
+const String mowerName = "automower";
+const String mowerType = "Automower";
+
+const char *host = "automower";
+const String noResponse = "no response";
+const char *automowerTimezone = "SGT-8";
+const uint8_t onboardLedPin = 2;
+Ticker onboardLedTicker;
+volatile bool onboardLedState = false;
+
+#if defined(ESP8266)
+ESP8266WebServer server(80);
+ESP8266HTTPUpdateServer httpUpdater;
+#elif defined(ESP32)
+WebServer server(80);
+#endif
+
+// Define automower UART pins
+#if defined(ESP8266)
+#define RX_PIN D2 // GPIO5
+#define TX_PIN D1 // GPIO4
+#define Relay_PIN D3
+#elif defined(ESP32)
+#define RX_PIN 16
+#define TX_PIN 17
+#define Relay_PIN 4
+#endif
+
+//***********************************************************************
+//***  WAKEUP Relay  ****************************************************
+//***********************************************************************
+// #define WITH_WAKEUP
+
+//***********************************************************************
+//***  AUTOMATION  ******************************************************
+//***********************************************************************
+// #define WITH_AUTOMATION
+const int automationCheckTimer = 60; // seconds
+
+//***********************************************************************
+//***  MQTT-Client  *****************************************************
+//***********************************************************************
+#define WITH_MQTT
+
+#ifdef WITH_MQTT
+#define MQTT_MAX_PACKET_SIZE 512
+#include <PubSubClient.h>
+WiFiClient MqttClient;
+PubSubClient client(MqttClient);
+const char *mqtt_server = MY_MQTT_SERVER; // defines the IP of the MQTT-Broker
+const int mqtt_port = MY_MQTT_PORT;              // defines the PORT of the MQTT-Broker (standard = 1883)
+const char *mqtt_user = MY_MQTT_USERNAME;          // defines the USERNAME for the MQTT-Broker
+const char *mqtt_password = MY_MQTT_PASSWORD;  // defines the PASSWORD for the MQTT-Broker
+const String main_topic = "Automower";   // defines the main topic
+static char buf[64];
+static char topic[64];
+#endif
+
+//***********************************************************************
+//***  OTA-Update  *****************************************************
+//***********************************************************************
+#define WITH_OTA
+#ifdef WITH_OTA
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
+const char *OTA_Hostname = "Automower";
+const char *OTA_Password = OTA_PWD;
+#endif
+
+char ChrDummy[10] = "FF";
+char ChrDummy2[10] = "FF";
+int IntDummy;
+bool isStarted = false;
+
+unsigned long previousMillisStatus = millis();
+unsigned long previousMillisTimer = millis();
+int updateIntervalStatus = 10; // seconds
+int updateIntervalTimer = 120; // seconds
+int trials = 3;
+int delayValue = 300;
+int readLength = 1000;
+const int logs = 15;
+byte jobFlagStatus = 0;
+byte jobFlagTimer = 0;
+
+String logArrayDate[logs];
+String logArrayMsg[logs];
+int logCounter = 0;
+
+String mower = noResponse;
+String mode = noResponse;
+String cover = noResponse;
+String Time = noResponse;
+String date = noResponse;
+String nextstart = noResponse;
+String timer1 = noResponse;
+String workingdays1 = noResponse;
+String timer2 = noResponse;
+String workingdays2 = noResponse;
+String batterycharge = noResponse;
+String batteryvoltage = noResponse;
+String batterycapacity = noResponse;
+String flowingcurrent = noResponse;
+String temperature = noResponse;
+String workinghours = noResponse;
+String ipAdress = noResponse;
+String rssi = noResponse;
+String ssid = noResponse;
+unsigned long previousMillisAutomation = millis();
+unsigned long startupMillis;
+bool automationStartedMower = false;
+bool automationAbortDays = false;
+
+// Create the mower UART
+#if defined(ESP8266)
+SoftwareSerial mowerSerial(RX_PIN, TX_PIN);
+#elif defined(ESP32)
+HardwareSerial &mowerSerial = Serial2;
+#endif
+
+//***********************************************************************
+//***  Function prototypes  *****************************************************
+//***********************************************************************
+void setup();
+void loop();
+void UpdateStatus();
+void UpdateTimer();
+void SetMowerTimeFromNtp();
+void UpdateAutomationStatus();
+void Log(String text);
+String CheckOutput(String newValue, String prevValue);
+bool IsUnknown(String s);
+bool ContainsUnknown(String s);
+void handleRoot();
+void handleRssi();
+void handlePrgver();
+void handleSend();
+String executeAutomationCommands(String cmdName, String &output);
+String setCmdCrC(String cmd);
+String weekDay2Hex(int dayNumber);
+void handleWeb();
+void handleLog();
+void handleAction();
+void handleJson();
+void handleSet();
+void handleNotFound();
+String GetMowerCommand(String name);
+String GetMowerHomeManAutoResponse();
+String GetMowerStatusText();
+String GetMowerStatusText(String hexResponse);
+String GetCoverStatusText();
+String GetCoverStatusText(String hexResponse);
+String GetTime();
+String GetTime(String hexResponse);
+String GetDate();
+String GetDate(String hexResponse);
+String GetTimer(String name);
+String GetTimerActiveStatus(String hexResponse);
+String GetWorkingDays(String name);
+String GetTimerTime(String hexResponse);
+String GetTimerWorkingDays(String hexResponse);
+String GetNextStartTime();
+double GetBatteryVoltage(String hexResponse);
+double GetBatteryCapacityInMilliAmpereHours(String hexResponse);
+double GetBatteryFlowingCurrentInMilliAmpere(String hexResponse);
+double GetBatteryTemperature(String hexResponse);
+String GetByteFromHexString(String asciiHex, int index);
+time_t ConvertUnixHexTime(String hexResponse);
+String GetNextStartTime(String hexResponse);
+String ExecuteSerialCommand(String name);
+String ExecuteSerialCommand(String cmd, String name);
+void WriteSerialCommand(String cmd);
+void ClearSerialBuffer();
+bool WaitforSerial(unsigned int bytes, unsigned int timeout);
+String ReadSerialResponse(String name);
+int hex2int(char *a, unsigned int len);
+String int2hex(int wert, int stellen);
+bool IsValid(String hexResponse);
+uint8_t CalculateCrc(String dataString);
+uint8_t DallasMaximCrc8(const uint8_t *data, const int size);
+uint8_t Hex2uint8(String a);
+uint8_t SingleHex2Dec(char a);
+String GetHtmlLog(String log);
+String GetHtmlWeb(String log);
+String GetHtmlRoot();
+String GetCss();
+String GetHtmlBodyLog(String logcontent);
+String GetHtmlBodyWeb(String logcontent);
+String GetHtmlBodyRoot();
+String GetLogContent();
+String GetLastLogEntry();
+String GetJson();
+String GetTestResponse(String name);
+void toggleOnboardLed();
+
+#ifdef WITH_MQTT
+void callback(char *gottopic, byte *payload, unsigned int length);
+void reconnect();
+void publish_mower_values();
+void publish_discovery_configs();
+#endif
+
+//***********************************************************************
+//*** setup  ************************************************************
+//***********************************************************************
+
+void setup()
+{
+  pinMode(onboardLedPin, OUTPUT);
+  digitalWrite(onboardLedPin, LOW);
+  onboardLedTicker.attach_ms(250, toggleOnboardLed);
+
+  WiFi.persistent(true);
+  WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
+  // it is a good practice to make sure your code sets wifi mode how you want it.
+
+  // put your setup code here, to run once:
+  Serial.begin(115200);
+#if defined(ESP8266)
+  mowerSerial.begin(115200);
+#elif defined(ESP32)
+  mowerSerial.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
+#endif
+
+  // WiFiManager, Local intialization. Once its business is done, there is no need to keep it around
+  WiFiManager wm;
+
+  // reset settings - wipe stored credentials for testing
+  // these are stored by the esp library
+  // wm.resetSettings();
+
+  // Automatically connect using saved credentials,
+  // if connection fails, it starts an access point with the specified name ( "Wall-E"),
+  // if empty will auto generate SSID, if password is blank it will be anonymous AP (wm.autoConnect())
+  // then goes into a blocking loop awaiting configuration and will return success result
+
+  bool res;
+  // res = wm.autoConnect(); // auto generated AP name from chipid
+  // res = wm.autoConnect("Wall-E"); // anonymous ap
+  res = wm.autoConnect("automower", AP_PASSWORD); // password protected ap
+
+  if (!res)
+  {
+    Serial.println("Failed to connect");
+    ESP.restart(); // restart the module if connection fails
+  }
+  else
+  {
+    // if you get here you have connected to the WiFi
+    Serial.println("connected...yeey :)");
+    onboardLedTicker.detach();
+    onboardLedTicker.attach_ms(1000, toggleOnboardLed);
+    configTzTime(automowerTimezone, "pool.ntp.org", "time.nist.gov");
+  }
+
+#if defined(ESP32)
+  BLEDevice::init("automower");
+  esp_bd_addr_t bleAddress;
+  memcpy(bleAddress, advertisementKey, sizeof(bleAddress));
+  bleAddress[0] = (advertisementKey[0] & 0x3F) | 0xC0;
+
+  const uint8_t advertisement[31] = {
+      0x1E, 0xFF, 0x4C, 0x00, 0x12, 0x19, 0x00,
+      advertisementKey[6], advertisementKey[7], advertisementKey[8], advertisementKey[9],
+      advertisementKey[10], advertisementKey[11], advertisementKey[12], advertisementKey[13],
+      advertisementKey[14], advertisementKey[15], advertisementKey[16], advertisementKey[17],
+      advertisementKey[18], advertisementKey[19], advertisementKey[20], advertisementKey[21],
+      advertisementKey[22], advertisementKey[23], advertisementKey[24], advertisementKey[25],
+      advertisementKey[26], advertisementKey[27], static_cast<uint8_t>(advertisementKey[0] >> 6), 0x00};
+
+  BLEAdvertising *advertising = BLEDevice::getAdvertising();
+  advertising->setAdvertisementType(ADV_TYPE_NONCONN_IND);
+  advertising->setScanResponse(false);
+  advertising->setDeviceAddress(bleAddress, BLE_ADDR_TYPE_RANDOM);
+  BLEAdvertisementData advertisementData;
+  advertisementData.addData(std::string(reinterpret_cast<const char *>(advertisement), sizeof(advertisement)));
+  advertising->setAdvertisementData(advertisementData);
+  advertising->start();
+#endif
+
+  isStarted = true;
+  server.begin();
+
+  server.on("/", handleRoot);
+  server.on("/prgver", handlePrgver);
+  server.on("/rssi", handleRssi);
+  server.on("/send", handleSend);
+  server.on("/web", handleWeb);
+  server.on("/log", handleLog);
+  server.on("/action", handleAction);
+  server.on("/json", handleJson);
+  server.on("/set", handleSet);
+  server.onNotFound(handleNotFound);
+  ipAdress = WiFi.localIP().toString();
+  MDNS.begin(host);
+#if defined(ESP8266)
+  httpUpdater.setup(&server);
+#endif
+  server.begin();
+  MDNS.addService("http", "tcp", 80);
+#if defined(ESP8266)
+  Serial.printf("HTTPUpdateServer ready! Open http://%s.local/update in your browser\n", host);
+#elif defined(ESP32)
+  Serial.printf("ArduinoOTA ready! Host: %s.local\n", host);
+#endif
+
+  // Initialise Relay_PIN
+  pinMode(Relay_PIN, OUTPUT); // Initialise the Relay_PIN pin as an output
+  digitalWrite(Relay_PIN, LOW);
+
+#ifdef WITH_OTA
+  ArduinoOTA.setPassword(OTA_Password);
+  ArduinoOTA.onStart([]()
+                     {
+    String type;
+    if (ArduinoOTA.getCommand() == U_FLASH) {
+      type = "sketch";
+    } else { // U_FS
+      type = "filesystem";
+    }
+    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
+    Log("OTA-Update: Start updating " + type); });
+  ArduinoOTA.onEnd([]()
+                   { Log("OTA-Update: Done!"); });
+  ArduinoOTA.onError([](ota_error_t error)
+                     {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) {
+      Log("Error on OTA-Update: Auth Failed");
+    } else if (error == OTA_BEGIN_ERROR) {
+      Log("Error on OTA-Update: Begin Failed");
+    } else if (error == OTA_CONNECT_ERROR) {
+      Log("Error on OTA-Update: Connect Failed");
+    } else if (error == OTA_RECEIVE_ERROR) {
+      Log("Error on OTA-Update: Receive Failed");
+    } else if (error == OTA_END_ERROR) {
+      Log("Error on OTA-Update: End Failed");
+    } });
+  ArduinoOTA.begin();
+#endif
+
+  // Init MQTT Client
+#ifdef WITH_MQTT
+  client.setServer(mqtt_server, mqtt_port);
+  client.setBufferSize(512);
+  client.setCallback(callback);
+#endif
+
+  SetMowerTimeFromNtp();
+
+  // Get current status
+  for (int i = 0; i <= 5; i++)
+  {
+    UpdateTimer();
+  }
+  UpdateStatus();
+
+  // Init automation mode
+#ifdef WITH_AUTOMATION
+  // Send mower initially to stop (mower is started by external automation)
+  ExecuteSerialCommand("STOP");
+  Log("AUTOMATION stopped mower");
+  startupMillis = millis();
+#endif
+
+  Serial.println("Mower UART initialized");
+}
+
+//***********************************************************************
+//*** loop  *************************************************************
+//***********************************************************************
+
+void loop(void)
+{
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillisStatus >= updateIntervalStatus * 1000)
+  {
+    previousMillisStatus = currentMillis;
+    UpdateStatus();
+#ifdef WITH_MQTT
+    publish_mower_values();
+#endif
+    rssi = String(WiFi.RSSI());
+    ssid = String(WiFi.SSID());
+  }
+  if (currentMillis - previousMillisTimer >= updateIntervalTimer * 1000)
+  {
+    previousMillisTimer = currentMillis;
+    UpdateTimer();
+  }
+  server.handleClient();
+#if defined(ESP8266)
+  MDNS.update();
+#endif
+#ifdef WITH_OTA
+  ArduinoOTA.handle();
+#endif
+
+  // MQTT Loop
+#ifdef WITH_MQTT
+  if (!client.connected())
+  {
+    reconnect();
+  }
+  client.loop();
+#endif
+
+  // Automation
+#ifdef WITH_AUTOMATION
+  if (currentMillis - previousMillisAutomation >= automationCheckTimer * 1000)
+  {
+    previousMillisAutomation = currentMillis;
+    UpdateAutomationStatus();
+  }
+#endif
+}
+
+void toggleOnboardLed()
+{
+  onboardLedState = !onboardLedState;
+  digitalWrite(onboardLedPin, onboardLedState ? HIGH : LOW);
+}
+
+void SetMowerTimeFromNtp()
+{
+  const time_t validTimeThreshold = 1704067200; // 2024-01-01 UTC
+  const unsigned long ntpWaitStarted = millis();
+  time_t ntpTime = time(nullptr);
+  while (ntpTime < validTimeThreshold && millis() - ntpWaitStarted < 30000)
+  {
+    delay(250);
+    ntpTime = time(nullptr);
+  }
+
+  if (ntpTime < validTimeThreshold)
+  {
+    Log("NTP time unavailable; mower clock not set");
+    return;
+  }
+
+  struct tm *localTime = localtime(&ntpTime);
+  if (localTime == nullptr)
+  {
+    Log("NTP local time conversion failed; mower clock not set");
+    return;
+  }
+
+  String command = "02-02-04-80-" + int2hex(localTime->tm_hour, 2) +
+                   "-" + int2hex(localTime->tm_min, 2) +
+                   "-" + int2hex(localTime->tm_sec, 2);
+  command = setCmdCrC(command);
+  if (ExecuteSerialCommand(command, "SETTIME").length() > 0)
+    Log("Mower clock synchronized from NTP " + command);
+  else
+    Log("NTP clock command received no valid mower response");
+}
+
+void UpdateStatus()
+{
+  Time = CheckOutput(GetTime(), Time);
+  delay(300);
+  if (jobFlagStatus == 0)
+    mower = CheckOutput(GetMowerStatusText(), mower);
+  else if (jobFlagStatus == 1)
+  {
+    String batteryResponse = ExecuteSerialCommand("BATTERY");
+    if (batteryResponse.length() > 0)
+    {
+      batteryvoltage = String(GetBatteryVoltage(batteryResponse), 1);
+      batterycapacity = String(GetBatteryCapacityInMilliAmpereHours(batteryResponse), 0);
+      flowingcurrent = String(GetBatteryFlowingCurrentInMilliAmpere(batteryResponse), 0);
+      temperature = String(GetBatteryTemperature(batteryResponse), 1);
+    }
+  }
+  jobFlagStatus++;
+  if (jobFlagStatus > 1)
+    jobFlagStatus = 0;
+}
+
+void UpdateTimer()
+{
+  if (jobFlagTimer == 0)
+    date = CheckOutput(GetDate(), date);
+  else if (jobFlagTimer == 1)
+    cover = CheckOutput(GetCoverStatusText(), cover);
+  else if (jobFlagTimer == 2)
+    nextstart = CheckOutput(GetNextStartTime(), nextstart);
+  else if (jobFlagTimer == 3)
+    timer1 = CheckOutput(GetTimer("TIMER1"), timer1);
+  else if (jobFlagTimer == 4)
+    timer2 = CheckOutput(GetTimer("TIMER2"), timer2);
+  else if (jobFlagTimer == 5)
+  {
+    workingdays1 = CheckOutput(GetWorkingDays("WORKINGDAYS1"), workingdays1);
+    workingdays2 = CheckOutput(GetWorkingDays("WORKINGDAYS2"), workingdays2);
+  }
+
+  jobFlagTimer++;
+  if (jobFlagTimer > 5)
+    jobFlagTimer = 0;
+}
+
+void UpdateAutomationStatus()
+{
+  int currentHour = Time.substring(0, 2).toInt();
+  int currentMinute = Time.substring(3, 5).toInt();
+
+  int timer2EndHour = timer2.substring(8, 10).toInt();
+  int timer2EndMinute = timer2.substring(11, 13).toInt();
+
+  // Remove working days at the end of Timer2 (otherwise mower might not start the next day)
+  if (automationAbortDays == false && (mower.indexOf("charging") > 0) && (currentHour >= timer2EndHour && currentMinute >= timer2EndMinute))
+  {
+    String output;
+    String cmd = executeAutomationCommands("ABORTDAYS", output);
+    automationAbortDays = true;
+  }
+
+  int timer1EndHour = timer1.substring(8, 10).toInt();
+  int timer1EndMinute = timer1.substring(11, 13).toInt();
+
+  // Set mower to start before falling asleep
+  if (automationStartedMower == false && (currentHour >= timer1EndHour && currentMinute >= timer1EndMinute))
+  {
+    ExecuteSerialCommand("START");
+    Log("AUTOMATION started mower");
+    automationStartedMower = true;
+  }
+}
+
+void Log(String text)
+{
+  logArrayDate[logCounter] = date + " " + Time;
+  logArrayMsg[logCounter] = text;
+  logCounter++;
+  if (logCounter >= logs)
+    logCounter = 0;
+}
+
+String CheckOutput(String newValue, String prevValue)
+{
+  if (ContainsUnknown(newValue) && !IsUnknown(prevValue))
+  {
+    if (ContainsUnknown(prevValue))
+      return prevValue;
+    else
+      return prevValue + " (" + newValue + ")";
+  }
+  else
+  {
+    return newValue;
+  }
+}
+
+bool IsUnknown(String s)
+{
+  if (s.indexOf(noResponse) == 0 || s.indexOf("unknown") == 0)
+    return true;
+  return false;
+}
+
+bool ContainsUnknown(String s)
+{
+  if (s.indexOf(noResponse) >= 0 || s.indexOf("unknown") >= 0)
+    return true;
+  return false;
+}
+
+//***********************************************************************
+//*** handler  **********************************************************
+//***********************************************************************
+
+void handleRoot()
+{
+  String html = GetHtmlRoot();
+  server.send(200, "text/html", html);
+}
+
+void handleRssi()
+{
+  server.send(200, "text/plain", String(WiFi.RSSI()) + "dBm");
+}
+
+void handlePrgver()
+{
+  server.send(200, "text/plain", String(PrgVer));
+}
+
+void handleSend()
+{
+  if (!server.hasArg("cmd") && !server.hasArg("name") && !server.hasArg("cmdAutoCrc") && !server.hasArg("automation"))
+  {
+    server.send(200, "text/plain", "No command or name argument specified.");
+    return;
+  }
+  String output = "";
+  String cmd = "";
+  String name = "";
+  if (server.hasArg("cmd"))
+    cmd = server.arg("cmd");
+  else if (server.hasArg("cmdAutoCrc"))
+  {
+    cmd = server.arg("cmdAutoCrc");
+    cmd = setCmdCrC(cmd);
+    output += "CMD with CRC: " + cmd + "\r\n";
+  }
+  else if (server.hasArg("name"))
+  {
+    name = server.arg("name");
+    cmd = GetMowerCommand(name);
+  }
+  else if (server.hasArg("automation"))
+  {
+    name = server.arg("automation");
+    cmd = executeAutomationCommands(name, output);
+  }
+
+  if (cmd.length() > 0)
+  {
+    output += ExecuteSerialCommand(cmd, name);
+  }
+  if (output.length() == 0)
+    output += "No response from mower.";
+  server.send(200, "text/plain", output);
+}
+
+String executeAutomationCommands(String cmdName, String &output)
+{
+  String cmd;
+  String date = GetDate(ExecuteSerialCommand("DATE"));
+
+  int dateDay = date.substring(0, 2).toInt();
+  int dateMonth = date.substring(3, 5).toInt();
+  int dateYear = date.substring(6, 10).toInt();
+  int h = dateMonth + 12;
+  int k = dateYear - 1;
+
+  if (dateMonth > 2)
+  {
+    h = dateMonth;
+    k = dateYear;
+  }
+
+  int dateWeekday = (dateDay + 2 * h + (3 * h + 3) / 5 + k + k / 4 - k / 100 + k / 400 + 1) % 7;
+  String timer2Start = ExecuteSerialCommand("TIMER2START");
+  // Stop mower to change timer
+  String stopAnswer = ExecuteSerialCommand("STOP");
+
+  if (cmdName.equals("MOWTODAY"))
+  {
+    cmd = "02-06-08-02-02-" + timer2Start.substring(15, 24) + weekDay2Hex(dateWeekday) + "-A0-05";
+    cmd = setCmdCrC(cmd);
+    output += "CMD: " + cmd + "\r\n";
+    output += "Response: " + ExecuteSerialCommand(cmd, "MOWTODAY") + "\r\n";
+    Log("AUTOMATION started mower to mow today");
+  }
+  else if (cmdName.equals("MOWNEXTDAY"))
+  {
+    if (dateWeekday < 6)
+      dateWeekday += 1;
+    else
+      dateWeekday = 0;
+
+    cmd = "02-06-08-02-02-" + timer2Start.substring(15, 24) + weekDay2Hex(dateWeekday) + "-A0-05";
+    cmd = setCmdCrC(cmd);
+    output += "CMD: " + cmd + "\r\n";
+    output += "Response: " + ExecuteSerialCommand(cmd, "MOWNEXTDAY") + "\r\n";
+    Log("AUTOMATION returned mower to mow tomorrow");
+  }
+  else if (cmdName.equals("MOWALLDAYS"))
+  {
+    cmd = "02-06-08-02-02-" + timer2Start.substring(15, 24) + "-7F-A0-05";
+    cmd = setCmdCrC(cmd);
+    output += "CMD: " + cmd + "\r\n";
+    output += "Response: " + ExecuteSerialCommand(cmd, "MOWNEXTDAY") + "\r\n";
+    Log("AUTOMATION set Timer2 to all workingsdays (Mo-Su)");
+  }
+  else if (cmdName.equals("ABORTDAYS"))
+  {
+    String timer2Start = ExecuteSerialCommand("TIMER2START");
+    cmd = "02-06-08-02-02-" + timer2Start.substring(15, 24) + "00-A0-05";
+    cmd = setCmdCrC(cmd);
+    output += "CMD: " + cmd + "\r\n";
+    output += "Response: " + ExecuteSerialCommand(cmd, "ABORTDAYS") + "\r\n";
+    Log("AUTOMATION removed all workingdays of Timer2");
+  }
+  else
+  {
+    output = "Wrong command for 'automation'";
+  }
+
+  // Start mower
+  cmdName = "START";
+  cmd = GetMowerCommand(cmdName);
+
+  return cmd;
+}
+
+String setCmdCrC(String cmd)
+{
+  String cmdCrc = int2hex(CalculateCrc(cmd.substring(3, cmd.length())), 2);
+  // Set command with CRC and trailing "-03"
+  return cmd + "-" + cmdCrc + "-03";
+}
+
+String weekDay2Hex(int dayNumber)
+{
+  switch (dayNumber)
+  {
+  case 0: // Sunday
+    return "40";
+  case 1: // Monday
+    return "01";
+  case 2: // Tuesday
+    return "02";
+  case 3: // Wednesday
+    return "04";
+  case 4: // Thursday
+    return "08";
+  case 5: // Friday
+    return "10";
+  case 6: // Saturday
+    return "20";
+  default:
+    return "00";
+  }
+}
+
+void handleLog()
+{
+  String html = GetHtmlLog(GetLogContent());
+  server.send(200, "text/html", html);
+}
+
+void handleWeb()
+{
+  String html = GetHtmlWeb(GetLogContent());
+  html.replace("%%mower%%", mower);
+  html.replace("%%mode%%", mode);
+  html.replace("%%cover%%", cover);
+  html.replace("%%time%%", Time);
+  html.replace("%%date%%", date);
+  html.replace("%%nextstart%%", nextstart);
+  html.replace("%%timer1%%", timer1);
+  html.replace("%%workingdays1%%", workingdays1);
+  html.replace("%%timer2%%", timer2);
+  html.replace("%%workingdays2%%", workingdays2);
+  html.replace("%%batterycharge%%", batterycharge);
+  html.replace("%%batteryvoltage%%", batteryvoltage);
+  html.replace("%%batterycapacity%%", batterycapacity);
+  html.replace("%%flowingcurrent%%", flowingcurrent);
+  html.replace("%%temperature%%", temperature);
+  html.replace("%%workinghours%%", workinghours);
+  html.replace("%%ip%%", ipAdress);
+  html.replace("%%rssi%%", rssi);
+  html.replace("%%ssid%%", ssid);
+
+  server.send(200, "text/html", html);
+}
+
+void handleAction()
+{
+  String WebString = "";
+  if (server.hasArg("action"))
+  {
+    String action = server.arg("action");
+    // Check if particular command was passed or hex command with name
+    if (action.indexOf(",") == -1)
+      WebString = ExecuteSerialCommand(action);
+    else
+    {
+      String name = action.substring(0, action.indexOf(","));
+      String cmd = setCmdCrC(action.substring(action.indexOf(",") + 1, action.length()));
+      WebString = ExecuteSerialCommand(cmd, name);
+    }
+    Log(action + " Response: " + WebString);
+  }
+  server.sendHeader("Location", "/web"); // Add a header to respond with a new location for the browser to go to the home page again
+  server.send(303);                      // Send it back to the browser with an HTTP status 303 (See Other) to redirect
+}
+
+void handleJson()
+{
+  server.send(200, "application/json", GetJson());
+}
+
+void handleSet()
+{
+  if (server.hasArg("trials"))
+  {
+    String value = server.arg("trials");
+    trials = value.toInt();
+  }
+  if (server.hasArg("updateIntervalTimer"))
+  {
+    String value = server.arg("updateIntervalTimer");
+    updateIntervalTimer = value.toInt(); // seconds
+  }
+  if (server.hasArg("updateIntervalStatus"))
+  {
+    String value = server.arg("updateIntervalStatus");
+    updateIntervalStatus = value.toInt(); // seconds
+  }
+  if (server.hasArg("delayValue"))
+  {
+    String value = server.arg("delayValue");
+    delayValue = value.toInt();
+  }
+  if (server.hasArg("readLength"))
+  {
+    String value = server.arg("readLength");
+    readLength = value.toInt();
+  }
+  server.send(200, "text/plain", "Value set");
+}
+
+void handleNotFound()
+{
+  server.send(404, "text/plain", "404: Not found"); // Send HTTP status 404 (Not Found) when there's no handler for the URI in the request
+}
+
+//***********************************************************************
+//*** commands  *********************************************************
+//***********************************************************************
+
+String GetMowerCommand(String name)
+{
+  if (name.equals("HOME"))
+    return "02-0E-01-02-8C-03";
+  else if (name.equals("MAN"))
+    return "02-0E-01-03-D2-03";
+  else if (name.equals("AUTO"))
+    return "02-0E-01-04-51-03";
+  else if (name.equals("START"))
+    return "02-0E-01-01-6E-03";
+  else if (name.equals("STOP"))
+    return "02-0E-01-00-30-03";
+  else if (name.equals("COVER"))
+    return "02-14-01-05-2F-03";
+  else if (name.equals("STATUS"))
+    return "02-12-01-01-9F-03";
+  else if (name.equals("BATTERY"))
+    return "02-14-01-01-4E-03";
+  else if (name.equals("CLOCK"))
+    return "02-02-01-00-8B-03";
+  else if (name.equals("DATE"))
+    return "02-02-01-01-D5-03";
+  else if (name.equals("TIMER1START"))
+    return "02-06-02-01-01-DC-03";
+  else if (name.equals("TIMER1STOP"))
+    return "02-06-02-01-81-50-03";
+  else if (name.equals("TIMER2START"))
+    return "02-06-02-01-02-3E-03";
+  else if (name.equals("TIMER2STOP"))
+    return "02-06-02-01-82-B2-03";
+  else if (name.equals("WORKINGDAYS1"))
+    return "02-06-02-01-01-DC-03";
+  else if (name.equals("WORKINGDAYS2"))
+    return "02-06-02-01-02-3E-03";
+  else if (name.equals("NEXT"))
+    return "02-06-01-05-2A-03";
+  else if (name.equals("WAKEUP"))
+  {
+    digitalWrite(Relay_PIN, HIGH);
+    delay(1000);
+    digitalWrite(Relay_PIN, LOW);
+    return "Mower wakeup or reset performed";
+  }
+  else if (name.equals("RESET"))
+  {
+    ESP.restart();
+    return "WIFI Module reset performed";
+  }
+  else if (name.equals("CLEARCREDS"))
+  {
+    WiFiManager wm;
+    wm.resetSettings();
+    ESP.restart();
+    return "WIFI Credentials cleared";
+  }
+  else
+    return "";
+}
+
+String GetMowerHomeManAutoResponse()
+{
+  return "02-0F-03-00-00-00-E7-03";
+}
+
+String GetMowerStatusText()
+{
+  String response = ExecuteSerialCommand("STATUS");
+  if (response.length() == 0)
+    return noResponse;
+
+  return GetMowerStatusText(response);
+}
+
+String GetMowerStatusText(String hexResponse)
+{
+  String byte4 = GetByteFromHexString(hexResponse, 4);
+  String byte5 = GetByteFromHexString(hexResponse, 5);
+  String byte6 = GetByteFromHexString(hexResponse, 6);
+  String byte7 = GetByteFromHexString(hexResponse, 7);
+  String byte8 = GetByteFromHexString(hexResponse, 8);
+
+  // Get workinghours
+  String byte19 = GetByteFromHexString(hexResponse, 19);
+  String byte20 = GetByteFromHexString(hexResponse, 20);
+  String hexString = byte20 + byte19;
+  hexString.toCharArray(ChrDummy, hexString.length() + 1);
+  workinghours = hex2int(ChrDummy, hexString.length());
+
+  // Get battery charge in percent
+  String byte21 = GetByteFromHexString(hexResponse, 21);
+  byte21.toCharArray(ChrDummy, byte21.length() + 1);
+  batterycharge = hex2int(ChrDummy, byte21.length());
+
+  String text = "";
+  if (byte4.equals("01"))
+  {
+    text += "parked";
+    if (byte7.substring(0, 1).equals("0"))
+    {
+      text += " (auto)";
+      mode = "auto";
+    }
+    else if (byte7.substring(0, 1).equals("1"))
+    {
+      text += " (man)";
+      mode = "man";
+    }
+    else if (byte7.substring(0, 1).equals("2"))
+    {
+      text += " (home)";
+      mode = "home";
+    }
+    return text;
+  }
+  else if (byte4.equals("02"))
+  {
+    text += "mowing";
+    if (byte6.equals("06"))
+    {
+      text += " (auto)";
+      mode = "auto";
+    }
+    else if (byte6.equals("07"))
+    {
+      text += " (man)";
+      mode = "man";
+    }
+    return text;
+  }
+  else if (byte4.equals("03"))
+  {
+    text += "returning";
+    if (byte6.equals("06"))
+    {
+      text += " (auto)";
+      mode = "auto";
+    }
+    else if (byte6.equals("08"))
+    {
+      text += " (home)";
+      mode = "home";
+    }
+    return text;
+  }
+  else if (byte4.equals("04"))
+  {
+    if (mower.indexOf("charging") == -1)
+      Log("mower is charging");
+    text += "charging";
+    if (byte6.equals("06"))
+    {
+      text += " (auto)";
+      mode = "auto";
+    }
+    else if (byte6.equals("07"))
+    {
+      text += " (man)";
+      mode = "man";
+    }
+    else if (byte6.equals("08"))
+    {
+      text += " (home)";
+      mode = "home";
+    }
+    return text;
+  }
+  else if (byte4.equals("05"))
+  {
+    if (mower.indexOf("searching") == -1)
+      Log("mower is searching");
+    text += "searching";
+    return text;
+  }
+  else if (byte4.equals("07"))
+  {
+    text += "Error";
+    if ((byte6.equals("05") && byte7.equals("13") && byte8.equals("00")) ||
+        (byte6.equals("05") && byte7.equals("01") && byte8.equals("27")))
+      text += " (outside working area [1])";
+    else if (byte6.equals("06") && byte7.equals("01") && byte8.equals("00"))
+      text += " (mower stopped)";
+    else if ((byte6.equals("06") && byte7.equals("01") && byte8.equals("27")) ||
+             (byte6.equals("06") && byte7.equals("01") && byte8.equals("00")))
+      text += " (mower tilted [33])";
+    else if ((byte6.equals("05") && byte7.equals("21") && byte8.equals("27")) ||
+             (byte6.equals("05") && byte7.equals("22") && byte8.equals("27")) || // Gardena R70li
+             (byte6.equals("05") && byte7.equals("01") && byte8.equals("00")) || // Gardena R70li
+             (byte6.equals("05") && byte7.equals("02") && byte8.equals("00")) || // Gardena R70li
+             (byte6.equals("05") && byte7.equals("12") && byte8.equals("00")) || // Gardena R70li
+             (byte6.equals("05") && byte7.equals("12") && byte8.equals("27")) || // Gardena R70li
+             (byte6.equals("08") && byte7.equals("20") && byte8.equals("00")))   // Gardena R70li
+      text += " (mower lifted [15])";
+    else if (byte6.equals("07") && byte7.equals("12") && byte8.equals("00"))
+      text += " (blades blocked)";
+    else if (byte6.equals("05") && byte7.equals("12") && byte8.equals("13"))
+      text += " (acknowledged and stopped)";
+    else
+      text += " (hex: " + byte5 + byte6 + byte7 + byte8 + ")";
+    if (mower.indexOf("error") == -1)
+      Log(text);
+    return text;
+  }
+  else if (byte4.equals("08"))
+  {
+    text += "Outage";
+    if (mower.indexOf("Outage") == -1)
+      Log(text);
+    return text;
+  }
+  else
+  {
+    if (mower.indexOf("unknown") == -1)
+      Log("mower status unknown");
+    text += "unknown (hex: " + byte4 + byte5 + byte6 + byte7 + byte8 + ")";
+    return text;
+  }
+}
+
+String GetCoverStatusText()
+{
+  String response = ExecuteSerialCommand("COVER");
+  if (response.length() == 0)
+    return noResponse;
+
+  return GetCoverStatusText(response);
+}
+
+String GetCoverStatusText(String hexResponse)
+{
+  if (hexResponse.equals("02-15-04-00-00-01-01-6B-03") ||
+      hexResponse.equals("02-15-04-00-00-01-01-35-03")) // Gardena R70li
+    return "open";
+  else if (hexResponse.equals("02-15-04-00-00-01-00-6B-03"))
+    return "closed";
+  else
+    return "unknown " + String("(hex: ") + hexResponse + String(")");
+}
+
+String GetTime()
+{
+  String response = ExecuteSerialCommand("CLOCK");
+  if (response.length() == 0)
+    return noResponse;
+
+  return GetTime(response);
+}
+
+String GetTime(String hexResponse)
+{
+  String byte4 = GetByteFromHexString(hexResponse, 4);
+  String byte5 = GetByteFromHexString(hexResponse, 5);
+  String byte6 = GetByteFromHexString(hexResponse, 6);
+
+  byte4.toCharArray(ChrDummy, byte4.length() + 1);
+  int hour = hex2int(ChrDummy, byte4.length());
+  String hh = String(hour);
+  if (hour < 10)
+    hh = "0" + hh;
+  byte5.toCharArray(ChrDummy, byte5.length() + 1);
+  int minute = hex2int(ChrDummy, byte5.length());
+  String mm = String(minute);
+  if (minute < 10)
+    mm = "0" + mm;
+  byte6.toCharArray(ChrDummy, byte6.length() + 1);
+  int second = hex2int(ChrDummy, byte6.length());
+  String ss = String(second);
+  if (second < 10)
+    ss = "0" + ss;
+  return hh + ":" + mm + ":" + ss;
+}
+
+String GetDate()
+{
+  String response = ExecuteSerialCommand("DATE");
+  if (response.length() == 0)
+    return noResponse;
+
+  return GetDate(response);
+}
+
+String GetDate(String hexResponse)
+{
+  String byte4 = GetByteFromHexString(hexResponse, 4);
+  String byte5 = GetByteFromHexString(hexResponse, 5);
+  String byte6 = GetByteFromHexString(hexResponse, 6);
+  String byte7 = GetByteFromHexString(hexResponse, 7);
+
+  String yearBytes = byte5 + byte4;
+  yearBytes.toCharArray(ChrDummy, yearBytes.length() + 1);
+  int year = hex2int(ChrDummy, yearBytes.length());
+
+  byte6.toCharArray(ChrDummy, byte6.length() + 1);
+  int month = hex2int(ChrDummy, byte6.length());
+  String MM = String(month);
+  if (month < 10)
+    MM = "0" + MM;
+  byte7.toCharArray(ChrDummy, byte7.length() + 1);
+  int day = hex2int(ChrDummy, byte7.length());
+  String dd = String(day);
+  if (day < 10)
+    dd = "0" + dd;
+  return dd + "." + MM + "." + String(year);
+}
+
+String GetTimer(String name)
+{
+  String startResponse = ExecuteSerialCommand(name + "START");
+  Serial.println("startResponse: " + startResponse);
+  delay(1000);
+  String stopResponse = ExecuteSerialCommand(name + "STOP");
+  Serial.println("stopResponse: " + stopResponse);
+
+  if (startResponse.length() == 0 || stopResponse.length() == 0)
+    return noResponse;
+
+  String status = GetTimerActiveStatus(startResponse);
+  if (status.equals("inactive"))
+    return status;
+
+  String start = GetTimerTime(startResponse);
+  String stop = GetTimerTime(stopResponse);
+  return start + " - " + stop;
+}
+
+String GetTimerActiveStatus(String hexResponse)
+{
+  String byte11 = GetByteFromHexString(hexResponse, 11);
+  if (byte11.equals("01"))
+    return "active";
+  else if (byte11.equals("00"))
+    return "inactive";
+  else
+    return "unknown";
+}
+
+String GetWorkingDays(String name)
+{
+  String response = ExecuteSerialCommand(name);
+  if (response.length() == 0)
+    return noResponse;
+
+  return GetTimerWorkingDays(response);
+}
+
+String GetTimerTime(String hexResponse)
+{
+  String byte5 = GetByteFromHexString(hexResponse, 5);
+  String byte7 = GetByteFromHexString(hexResponse, 7);
+
+  byte5.toCharArray(ChrDummy, byte5.length() + 1);
+  int hour = hex2int(ChrDummy, byte5.length());
+  String hh = String(hour);
+  if (hour < 10)
+    hh = "0" + hh;
+  byte7.toCharArray(ChrDummy, byte7.length() + 1);
+  int minute = hex2int(ChrDummy, byte7.length());
+  String mm = String(minute);
+  if (minute < 10)
+    mm = "0" + mm;
+  return hh + ":" + mm;
+}
+
+String GetTimerWorkingDays(String hexResponse)
+{
+  String weekdays[7] = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"};
+
+  String byte8 = GetByteFromHexString(hexResponse, 8);
+
+  byte8.toCharArray(ChrDummy, byte8.length() + 1);
+  byte by = (byte)hex2int(ChrDummy, byte8.length());
+
+  String workingDays = "";
+  String separator = "";
+  for (int i = 0; i < 7; i++)
+  {
+    int bit = bitRead(by, i);
+    if (bit == 1)
+    {
+      workingDays += separator + weekdays[i];
+      separator = ", ";
+    }
+  }
+  if (workingDays == "")
+    workingDays = "none";
+
+  return workingDays;
+}
+
+String GetNextStartTime()
+{
+  String response = ExecuteSerialCommand("NEXT");
+  if (response.length() == 0)
+    return noResponse;
+
+  return String(GetNextStartTime(response));
+}
+
+double GetBatteryVoltage(String hexResponse)
+{
+  String byte4 = GetByteFromHexString(hexResponse, 4);
+  String byte5 = GetByteFromHexString(hexResponse, 5);
+  String hexString = byte5 + byte4;
+  hexString.toCharArray(ChrDummy, hexString.length() + 1);
+  return (double)hex2int(ChrDummy, hexString.length()) / 1000.0;
+}
+
+double GetBatteryCapacityInMilliAmpereHours(String hexResponse)
+{
+  String byte6 = GetByteFromHexString(hexResponse, 6);
+  String byte7 = GetByteFromHexString(hexResponse, 7);
+  String hexString = byte7 + byte6;
+  hexString.toCharArray(ChrDummy, hexString.length() + 1);
+  return (double)(short)hex2int(ChrDummy, hexString.length());
+}
+
+double GetBatteryFlowingCurrentInMilliAmpere(String hexResponse)
+{
+  String byte8 = GetByteFromHexString(hexResponse, 8);
+  String byte9 = GetByteFromHexString(hexResponse, 9);
+  String hexString = byte9 + byte8;
+  hexString.toCharArray(ChrDummy, hexString.length() + 1);
+  return (double)(short)hex2int(ChrDummy, hexString.length());
+}
+
+double GetBatteryTemperature(String hexResponse)
+{
+  String byte10 = GetByteFromHexString(hexResponse, 10);
+  String byte11 = GetByteFromHexString(hexResponse, 11);
+  byte10.toCharArray(ChrDummy, byte10.length() + 1);
+  byte11.toCharArray(ChrDummy2, byte11.length() + 1);
+  return ((double)hex2int(ChrDummy2, byte11.length()) * 25.5) + ((double)hex2int(ChrDummy, byte10.length()) / 10.0);
+}
+
+String GetByteFromHexString(String asciiHex, int index)
+{
+
+  if (index < 0 || index * 3 + 2 > asciiHex.length())
+    return "";
+  return asciiHex.substring(index * 3, index * 3 + 2);
+}
+
+time_t ConvertUnixHexTime(String hexResponse)
+{
+  String byte9 = GetByteFromHexString(hexResponse, 9);
+  String byte10 = GetByteFromHexString(hexResponse, 10);
+  String byte11 = GetByteFromHexString(hexResponse, 11);
+  String byte12 = GetByteFromHexString(hexResponse, 12);
+  String hexString = byte12 + byte11 + byte10 + byte9;
+  hexString.toCharArray(ChrDummy, hexString.length() + 1);
+  time_t rawtime = (time_t)hex2int(ChrDummy, hexString.length());
+  return rawtime;
+}
+
+String GetNextStartTime(String hexResponse)
+{
+  time_t rawtime = ConvertUnixHexTime(hexResponse);
+  char buff[30];
+  strftime(buff, 30, "%a. %d.%m.%Y - %H:%M", localtime(&rawtime));
+  return buff;
+}
+
+String ExecuteSerialCommand(String name)
+{
+  String cmd = GetMowerCommand(name);
+  if (cmd.length() > 0)
+    return ExecuteSerialCommand(cmd, name);
+  else
+    return "ERROR - could not find command name";
+}
+
+String ExecuteSerialCommand(String cmd, String name)
+{
+  String response = "";
+  for (int i = 0; i < trials; i++)
+  {
+    if (i > 0)
+      delay(delayValue);
+    WriteSerialCommand(cmd);
+    response = ReadSerialResponse(name);
+    if (IsValid(response))
+      return response;
+
+    Log("Invalid response (" + name + " " + cmd + " -> " + response + ")");
+  }
+  return "";
+}
+
+void WriteSerialCommand(String cmd)
+{
+  ClearSerialBuffer();
+  do
+  {
+    cmd.substring(0, 2).toCharArray(ChrDummy, 3);
+    IntDummy = hex2int(ChrDummy, 2);
+    cmd = cmd.substring(3, cmd.length());
+    mowerSerial.write(IntDummy); // Use mowerSerial instead of Serial
+  } while (cmd.length() > 1);
+}
+
+void ClearSerialBuffer()
+{
+  do
+  {
+    mowerSerial.read(); // Use mowerSerial instead of Serial
+  } while (mowerSerial.available() > 0); // Use mowerSerial instead of Serial
+}
+
+bool WaitforSerial(unsigned int bytes, unsigned int timeout)
+{
+  unsigned long now = millis();
+
+  while ((millis() - now) < timeout)
+  {
+    if (mowerSerial.available() >= bytes) // Use mowerSerial instead of Serial
+      return true;
+    server.handleClient();
+  }
+  return false;
+}
+
+String ReadSerialResponse(String name)
+{
+  if (DebugOn)
+    return GetTestResponse(name);
+
+  String response = "";
+  String separator = "-";
+
+  if (!WaitforSerial(3, 1000))
+    return ("timeout1"); // wait for first 3 bytes to come
+
+  response = int2hex(mowerSerial.read(), 2);              // Use mowerSerial instead of Serial
+  response += separator + int2hex(mowerSerial.read(), 2); // command byte
+  char payload = mowerSerial.read();
+  response += separator + int2hex(payload, 2); // length
+
+  if (!WaitforSerial(payload + 2, 1000))
+    return ("timeout2 " + response);
+  for (int i = 0; i < payload; i++)
+  {
+    response += separator + int2hex(mowerSerial.read(), 2); // payload
+  }
+
+  response += separator + int2hex(mowerSerial.read(), 2); // crc
+  response += separator + int2hex(mowerSerial.read(), 2); // end byte
+
+  return response;
+}
+
+int hex2int(char *a, unsigned int len)
+{
+  int val = 0;
+
+  for (int i = 0; i < len; i++)
+  {
+    char c = a[i];
+    if (c >= '0' && c <= '9')
+      val += (c - '0') * (1 << (4 * (len - 1 - i)));
+    else if (c >= 'A' && c <= 'F')
+      val += (c - 'A' + 10) * (1 << (4 * (len - 1 - i)));
+    else if (c >= 'a' && c <= 'f')
+      val += (c - 'a' + 10) * (1 << (4 * (len - 1 - i)));
+  }
+  return val;
+}
+
+String int2hex(int wert, int stellen)
+{
+  String temp = String(wert, HEX);
+  temp.toUpperCase();
+  String prae = "";
+  int len = temp.length();
+  int diff = stellen - len;
+  for (int i = 0; i < diff; i++)
+    prae = prae + "0";
+  String result = (prae + temp);
+  result.toUpperCase();
+  return result;
+}
+
+bool IsValid(String hexResponse)
+{
+  bool result = true;
+  String byte0 = GetByteFromHexString(hexResponse, 0);
+  if (!byte0.equals("02"))
+    return false;
+  int nBytes = (hexResponse.length() - 2) / 3 + 1;
+  String byteLast = GetByteFromHexString(hexResponse, nBytes - 1);
+  if (!byteLast.equals("03"))
+    return false;
+
+  uint8_t checkValue = Hex2uint8(GetByteFromHexString(hexResponse, nBytes - 2));
+  String checkString = hexResponse.substring(3, hexResponse.length() - 6);
+
+  return (CalculateCrc(checkString) ^ checkValue) == 0;
+}
+
+uint8_t CalculateCrc(String dataString)
+{
+  int nBytes = (dataString.length() - 2) / 3 + 1;
+  dataString.replace("-", "");
+  uint8_t data[nBytes];
+  for (int i = 0; i < sizeof(data); i++)
+  {
+    char a[2];
+    a[0] = dataString[i * 2];
+    a[1] = dataString[i * 2 + 1];
+    data[i] = Hex2uint8(a);
+  }
+  return DallasMaximCrc8(data, sizeof(data));
+}
+
+uint8_t DallasMaximCrc8(const uint8_t *data, const int size)
+{
+  uint8_t crc = 0;
+  for (int i = 0; i < size; ++i)
+  {
+    uint8_t inbyte = data[i];
+    for (char j = 0; j < 8; ++j)
+    {
+      uint8_t mix = (crc ^ inbyte) & 0x01;
+      crc >>= 1;
+      if (mix)
+        crc ^= 0x8C;
+      inbyte >>= 1;
+    }
+  }
+  return crc;
+}
+
+uint8_t Hex2uint8(String a)
+{
+  return SingleHex2Dec(a.charAt(0)) * 16 + SingleHex2Dec(a.charAt(1));
+}
+
+uint8_t SingleHex2Dec(char a)
+{
+  switch (a)
+  {
+  case '0':
+    return 0;
+  case '1':
+    return 1;
+  case '2':
+    return 2;
+  case '3':
+    return 3;
+  case '4':
+    return 4;
+  case '5':
+    return 5;
+  case '6':
+    return 6;
+  case '7':
+    return 7;
+  case '8':
+    return 8;
+  case '9':
+    return 9;
+  case 'a':
+  case 'A':
+    return 10;
+  case 'b':
+  case 'B':
+    return 11;
+  case 'c':
+  case 'C':
+    return 12;
+  case 'd':
+  case 'D':
+    return 13;
+  case 'e':
+  case 'E':
+    return 14;
+  case 'f':
+  case 'F':
+    return 15;
+  default:
+    return 0;
+  }
+}
+
+//***********************************************************************
+//*** html  *************************************************************
+//***********************************************************************
+
+String GetHtmlLog(String log)
+{
+  String s = "<!DOCTYPE html>";
+  s += "<html>";
+  s += "<head>";
+  s += "<title>Automower Log</title>";
+  s += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  s += GetCss();
+  s += "</head>";
+  s += GetHtmlBodyLog(log);
+  s += "</html>";
+  return s;
+}
+
+String GetHtmlWeb(String log)
+{
+  String s = "<!DOCTYPE html>";
+  s += "<html>";
+  s += "<head>";
+  s += "<title>Automower Web</title>";
+  s += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  s += GetCss();
+  s += "</head>";
+  s += GetHtmlBodyWeb(log);
+  s += "</html>";
+  return s;
+}
+
+String GetHtmlRoot()
+{
+  String s = "<!DOCTYPE html>";
+  s += "<html>";
+  s += "<head>";
+  s += "<title>Automower Root</title>";
+  s += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  s += GetCss();
+  s += "</head>";
+  s += GetHtmlBodyRoot();
+  s += "</html>";
+  return s;
+}
+
+String GetCss()
+{
+  String s = "<style>";
+  s += "body {";
+  s +=   "background-color: #101010;";
+  s +=   "color: white;";
+  s +=   "font-family: sans-serif;";
+  s += "}";
+  s += ".content {";
+  s +=   "max-width: 400px;";
+  s +=   "margin: auto;";
+  s +=   "background: #202020;";
+  s +=   "padding: 10px;";
+  s += "}";
+  s += "h1 {color: #9AAF7C;}";
+  s += "p {color: #CCCCCC;}";
+  s += "input[type=button], input[type=submit], input[type=reset], button {";
+  s +=   "-webkit-appearance: none;";
+  s +=   "background-color: #303031;";
+  s +=   "border: 1px solid #404040;";
+  s +=   "color: white;";
+  s +=   "font-size: 20px;";
+  s +=   "padding: 16px 32px;";
+  s +=   "text-decoration: none;";
+  s +=   "margin: 4px 2px;";
+  s +=   "cursor: pointer;";
+  s +=   "width: 100%;";
+  s += "}";
+  s += "input[type=submit]:hover, button:hover {background-color: #353535;}";
+  s += "textarea {";
+  s +=   "width: 100%;";
+  s +=   "color: #D2BE84;";
+  s +=   "height: 150px;";
+  s +=   "padding: 12px 20px;";
+  s +=   "box-sizing: border-box;";
+  s +=   "border: 2px solid #404040;";
+  s +=   "background-color: #303031;";
+  s +=   "resize: none;";
+  s += "}";
+  s += "input[type=submit].timerSubmit:focus {";
+  s +=   "color: #353535;";
+  s +=   "font-size: 5px;}";
+  s += "select {";
+  s +=   "background-color: #303031;";
+  s +=   "border: 1px solid #404040;";
+  s +=   "color: white;";
+  s +=   "margin: 4px 2px;";
+  s +=   "cursor: pointer;";
+  s += "}";
+  s += "input[type=number] {";
+  s +=   "background-color: #303031;";
+  s +=   "border: 1px solid #404040;";
+  s +=   "color: white;";
+  s +=   "margin: 4px 2px;";
+  s +=   "cursor: pointer;";
+  s +=   "max-width: 3em;";
+  s += "}";
+  s += "input[type=checkbox] {";
+  s +=   "-webkit-appearance: none;";
+  s +=   "background-color: #303031;";
+  s +=   "border: 1px solid #404040;";
+  s +=   "padding: 5px;";
+  s +=   "margin: 4px 2px;";
+  s +=   "cursor: pointer;";
+  s +=   "vertical-align: middle;";
+  s += "}";
+  s += "input[type=checkbox]:checked {";
+  s +=   "-webkit-appearance: none;";
+  s +=   "background-color: #303031;";
+  s +=   "border: 1px solid #404040;";
+  s +=   "padding: 5px;";
+  s +=   "margin: 4px 2px;";
+  s +=   "cursor: pointer;";
+  s +=   "box-shadow: inset 0px 0px 0px 1px #fff;";
+  s +=   "background-color: #9AAF7C;";
+  s +=   "vertical-align: middle;";
+  s += "}";
+  s += "label.checkboxLabel {";
+  s +=   "position: relative;";
+  s +=   "vertical-align: middle;";
+  s += "}";
+  s += ".box {";
+  s +=   "width: 100%;";
+  s +=   "padding: 12px 20px;";
+  s +=   "box-sizing: border-box;";
+  s +=   "border: 2px solid #404040;";
+  s +=   "background-color: #303031;";
+  s +=   "font-size: 14px;";
+  s += "}";
+  s += ".log {";
+  s +=   "height: 180px;";
+  s +=   "overflow-y: scroll;";
+  s += "}";
+  s += ".logDate {";
+  s +=   "color: #0892AF;";
+  s +=   "font-size: 10px;";
+  s += "}";
+  s += ".logMsg {";
+  s +=   "color: #D2BE84;";
+  s +=   "font-size: 11px;";
+  s += "}";
+  s += "table.status {";
+  s +=   "border-collapse: collapse;";
+  s +=   "width:100%;";
+  s +=   "color: #B99466;";
+  s += "}";
+  s += "table.status th, table.status td {";
+  s +=   "border-bottom: 1px solid #404040;";
+  s +=   "padding: 6px 6px 4px 0px;";
+  s += "}";
+  s += "table.status tr:hover {background-color: #353535;}";
+  s += "table.status td:first-child {text-align:left;  width: 115px; padding-left: 2px;}";
+  s += "table.status td:nth-child(2) {color:#9AAF7C; }";
+  s += "table.battery {";
+  s +=   "border-collapse: collapse;";
+  s +=   "width:100%;";
+  s +=   "color: #B99466;";
+  s +=   "text-align:center;";
+  s += "}";
+  s += "table.battery th {";
+  s +=   "border-bottom: 1px solid #404040;";
+  s +=   "text-align:center;";
+  s +=   "font-weight: normal;";
+  s += "}";
+  s += "table.battery tr:hover {background-color: #353535;}";
+  s += "table.battery tr:first-child {background-color: #353535;}";
+  s += "table.battery tr:nth-child(2) {";
+  s +=   "color:#9AAF7C; ";
+  s += "}";
+  s += ".intervalContainer {";
+  s +=   "overflow: auto;";
+  s += "}";
+  s += ".interval {";
+  s +=   "color: #0892AF;";
+  s +=   "margin-top: 10px;";
+  s +=   "font-size: 10px;";
+  s +=   "height: 16px;";
+  s +=   "min-height: 16px;";
+  s +=   "float: right;";
+  s += "}";
+  s += "a:link {";
+  s +=   "color: #00d1ff;";
+  s +=   "text-decoration: none;";
+  s += "}";
+  s += "a:visited {";
+  s +=   "color: #00b2ff;";
+  s +=   "text-decoration: none;";
+  s +=   "}";
+  s += "a:hover {";
+  s +=   "color: #00d1ff;";
+  s +=   "text-decoration: underline;";
+  s += "}";
+  s += ".cmdHour {";
+  s +=   "color: #FF0000;";
+  s += "}";
+  s += ".cmdMinute {";
+  s +=   "color: #00FF00;";
+  s += "}";
+  s += ".cmdDays {";
+  s +=   "color: #FFFF00;";
+  s += "}";
+  s += "</style>";
+  return s;
+}
+
+String GetHtmlBodyLog(String logcontent)
+{
+  String settings = "update interval: " + String(updateIntervalStatus) + "s/" + String(updateIntervalTimer) + "s trials: " + String(trials) + " delay: " + String(delayValue) + " read length: " + String(readLength);
+  String s = "<body>";
+  s += "<div class='content'>";
+  s += "<h1>" + String(mowerName) + "</h1>";
+  s += "<p>" + String(mowerType) + "&nbsp;&nbsp;&nbsp;<a href=http://" + ipAdress + "/>Startpage</a></p>";
+  s += "<br>";
+  s += "<button onClick='window.location.reload();'>refresh</button>";
+  s += "<br>";
+  s += "<br>";
+  s += "Log:<br>";
+  s += "<div class='box log'>" + logcontent + "</div>";
+  s += "<div class='intervalContainer'><div class='interval'>" + settings + "</div></div>";
+  s += "</div>";
+  s += "</body>";
+  return s;
+}
+
+String GetHtmlBodyWeb(String logcontent)
+{
+  String settings = "update interval: " + String(updateIntervalStatus) + "s/" + String(updateIntervalTimer) + "s trials: " + String(trials) + " delay: " + String(delayValue) + " read length: " + String(readLength);
+  String s = "<body>";
+  s +=   "<script> function timerSet() {";
+  s +=     "var timerType = document.getElementById('timerType').value.toString(16);";
+  s +=     "var timerHour = parseInt(document.getElementById('timerHour').value).toString(16).padStart(2,'0').toUpperCase();";
+  s +=     "var timerMinute = parseInt(document.getElementById('timerMinute').value).toString(16).padStart(2,'0').toUpperCase();";
+  s +=     "var timerDays = '';";
+  s +=     "var timerCheckb = document.querySelectorAll('.timerDayCheckb');";
+  s +=     "for (var index = timerCheckb.length-1; index >= 0; index--)";
+  s +=     "{ timerDays +=  (timerCheckb[index].checked - 0) }";
+  s +=     "timerDays = parseInt(timerDays, 2).toString(16).padStart(2,'0').toUpperCase();";
+  s +=     "document.getElementById('timerSubmit').value ='SetTimer,02-06-08-02-'+ timerType + '-' + timerHour + '-00-' + timerMinute + '-' + timerDays + '-A0-05'; }";
+  s +=   "</script>";
+  s +=   "<div class='content'>";
+  s +=     "<h1>" + String(mowerName) + "</h1>";
+  s +=     "<p>" + String(mowerType) + "&nbsp;&nbsp;&nbsp;<a href=http://" + ipAdress + "/>Startpage</a></p>";
+  s +=     "<form action='/action'>";
+  s +=       "<input type='submit' name='action' value='START' /><br>";
+  s +=       "<input type='submit' name='action' value='STOP' /><br>";
+  s +=       "<br>";
+  s +=       "<input type='submit' name='action' value='HOME' /><br>";
+  s +=       "<input type='submit' name='action' value='MAN' /><br>";
+  s +=       "<input type='submit' name='action' value='AUTO' /><br>";
+  s +=       "<br>";
+  s +=     "Management Options:<br>";
+  #ifdef WITH_WAKEUP
+  s +=       "<button type='submit' name='action' value='WAKEUP'>Reset or wakeup Mower</button><br>";
+  #endif
+  s +=       "<button type='submit' name='action' value='RESET'>Restart WIFI Module</button><br>";
+  //s +=       "<button type='submit' name='action' value='CLEARCREDS'>Clear WIFI Credentials</button><br>";
+  s +=     "</form>";
+  s +=     "<br>";
+  s +=     "Status:<br>";
+  s +=     "<div class='box'>";
+  s +=       "<table class='status'>";
+  s +=         "<tr><td>Mower</td><td>%%mower%%</td></tr>";
+  s +=         "<tr><td>Mode</td><td>%%mode%%</td></tr>";
+  s +=         "<tr><td>Cover</td><td>%%cover%%</td></tr>";
+  s +=         "<tr><td>Time</td><td>%%time%%</td></tr>";
+  s +=         "<tr><td>Date</td><td>%%date%%</td></tr>";
+  s +=         "<tr><td>Workinghours</td><td>%%workinghours%%</td></tr>";
+  s +=         "<tr><td>IP</td><td>%%ip%%</td></tr>";
+  s +=         "<tr><td>Wifi RSSI</td><td>%%rssi%% dB</td></tr>";
+  s +=         "<tr><td>Wifi SSID</td><td>%%ssid%%</td></tr>";
+  s +=       "</table>";
+  s +=     "</div>";
+  s +=     "<br>";
+  s +=     "Timer:<br>";
+  s +=     "<div class='box'>";
+  s +=       "<table class='status'>";
+  s +=         "<tr><td>Next start</td><td>%%nextstart%%</td></tr>";
+  s +=         "<tr><td>Timer1</td><td>%%timer1%%</td></tr>";
+  s +=         "<tr><td>Working days1</td><td>%%workingdays1%%</td></tr>";
+  s +=         "<tr><td>Timer2</td><td>%%timer2%%</td></tr>";
+  s +=         "<tr><td>Working days2</td><td>%%workingdays2%%</td></tr>";
+  s +=       "</table>";
+  s +=     "</div>";
+  s +=     "<br>";
+  s +=     "Set timer:<br>";
+  s +=     "<div class='box'>";
+  s +=       "<table class='status'>";
+  s +=         "<form action='/action'><tr><td><select id='timerType'><option value='01'>Timer1Start</option><option value='81'>Timer1Stop</option><option value='02'>Timer2Start</option><option value='82'>Timer2Stop</option></select>";
+  s +=           "<input type='number' id='timerHour' min='00' max='23' value='10'>:<input type='number' id='timerMinute' min='00' max='59' value='00'></td></tr>";
+  s +=           "<tr><td><input type='checkbox' class='timerDayCheckb' id='timerDayMo' value='Mo'><label class='checkboxLabel' for='timerDayMo'>Mo</label><input type='checkbox' class='timerDayCheckb' id='timerDayTu' value='Tu'><label class='checkboxLabel' for='timerDayTu'>Tu</label>";
+  s +=           "<input type='checkbox' class='timerDayCheckb' id='timerDayWe' value='We'><label class='checkboxLabel' for='timerDayWe'>We</label><input type='checkbox' class='timerDayCheckb' id='timerDayTh' value='Th'><label class='checkboxLabel' for='timerDayTh'>Th</label><input type='checkbox' class='timerDayCheckb' id='timerDayFr' value='Fr'><label class='checkboxLabel' for='timerDayFr'>Fr</label>";
+  s +=           "<input type='checkbox' class='timerDayCheckb' id='timerDaySa' value='Sa'><label class='checkboxLabel' for='timerDaySa'>Sa</label><input type='checkbox' class='timerDayCheckb' id='timerDaySu' value='Su'><label class='checkboxLabel' for='timerDaySa'>Su</label></td></tr>";
+  s +=           "<tr><td><input type='submit' class='timerSubmit' onclick='timerSet()' id='timerSubmit' name='action' value='Set Timer' /></td></tr></form>";
+  s +=       "</table>";
+  s +=     "</div>";
+  s +=     "<br>";
+  s +=     "Battery:<br>";
+  s +=     "<div class='box'>";
+  s +=       "<table class='battery'>";
+  s +=         "<tr><th>Volt</th><th>mAh</th><th>%</th><th>mA</th><th>&deg;C</th></tr>";
+  s +=         "<tr><td>%%batteryvoltage%%</td><td>%%batterycapacity%%</td><td>%%batterycharge%%</td><td>%%flowingcurrent%%</td><td>%%temperature%%</td></tr>";
+  s +=       "</table>";
+  s +=     "</div>";
+  s +=     "<br>";
+  s +=     "<button onClick='window.location.reload();'>refresh</button>";
+  s +=     "<br>";
+  s +=     "<br>";
+  s +=     "Log:<br>";
+  s +=     "<div class='box log'>" + logcontent + "</div>";
+  s +=     "<div class='intervalContainer'><div class='interval'>" + settings + "</div></div>";
+  s +=   "</div>";
+  s += "</body>";
+  return s;
+}
+
+String GetHtmlBodyRoot()
+{
+  String hostName = String(host);
+  String s = "<body>";
+  s +=   "<div class='content'>";
+  s +=     "<h1>" + String(mowerName) + "</h1>";
+  s +=     "<p>" + String(mowerType) + "</p>";
+  s +=     "<br>";
+  s +=     "Requests:<br>";
+  s +=     "<div class='box'>";
+  s +=       "<table class='status'>";
+  s +=         "<tr><td>Web interface</td><td><a href=http://" + ipAdress + "/web>http://" + ipAdress + "/web</a></td></tr>";
+  s +=         "<tr><td>Json output </td><td><a href=http://" + ipAdress + "/json>http://" + ipAdress + "/json</a></td></tr>";
+  s +=         "<tr><td>Send hex command</td></td><td>http://" + ipAdress + "/send?cmd=A0-B1-C2-D3-E4</td></tr>";
+  s +=         "<tr><td>Send hex command with auto CRC</td></td><td>http://" + ipAdress + "/send?cmdAutoCrc=A0-B1-C2-D3-E4 (without last 2 bytes - CRC and endbyte)</td></tr>";
+  s +=         "<tr><td>Send command by name</td><td>http://" + ipAdress + "/send?name=HOME</td></tr>";
+  s +=         "<tr><td>Wifi strength</td><td><a href=http://" + ipAdress + "/rssi>http://" + ipAdress + "/rssi</a></td></tr>";
+  s +=         "<tr><td>Program version</td><td><a href=http://" + ipAdress + "/prgver>http://" + ipAdress + "/prgver</a></td></tr>";
+  s +=         "<tr><td>Log output </td><td><a href=http://" + ipAdress + "/log>http://" + ipAdress + "/log</a></td></tr>";
+  s +=         "<tr><td>Webupdater</td><td><a href=http://" + ipAdress + "/update>http://" + ipAdress + "/update</a></td></tr>";
+  s +=       "</table>";
+  s +=     "</div>";
+  s +=     "<br>";
+  s +=     "Names:<br>";
+  s +=     "<div class='box'>";
+  s +=       "Pre-defined commands for the mower";
+  s +=       "<table class='status'>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=START'>START</a></td><td>Starts the mower, when stopped.</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=STOP'>STOP</a></td><td>Stops the mower while mowing.</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=HOME'>HOME</a></td><td>Sends the mower to the charging station.</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=MAN'>MAN</a></td><td>The mower starts when it is out on the lawn, it will mow until the battery runs out.</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=AUTO'>AUTO</a></td><td>The standard, automatic operation mode where the mower mows and charges automatically.</td></tr>";
+  #ifdef WITH_WAKEUP
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=WAKEUP'>WAKEUP</a></td><td>Triggers a wakeup pulse for the mower via the relay board attached to the reset contact on the main board.</td></tr>";
+  #endif
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=RESET'>RESET</a></td><td>Restarts the wireless module.</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=CLEARCREDS'>CLEARCREDS</a></td><td>Clears the stored WIFI credentials and restarts wifi module.</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=STATUS'>STATUS</a></td><td>Retrieves the status of the mower like parked, charging, mowing, searching or error.</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=COVER'>COVER</a></td><td>Retrieves the status of the cover, whether open or closed.</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=BATTERY'>BATTERY</a></td><td>Retrieves battery information like voltage, capacity or flowing current.</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=CLOCK'>CLOCK</a></td><td>Retrieves the current time.</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=DATE'>DATE</a></td><td>Retrieves the current date.</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=TIMER1START'>TIMER1START</a></td><td>Retrieves the start time of Timer1</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=TIMER1STOP'>TIMER1STOP</a></td><td>Retrieves the stop time of Timer1</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=WORKINGDAYS1'>WORKINGDAYS1</a></td><td>Retrieves the working days of Timer1</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=TIMER2START'>TIMER2START</a></td><td>Retrieves the start time of Timer2</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=TIMER2STOP'>TIMER2STOP</a></td><td>Retrieves the stop time of Timer2</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=WORKINGDAYS2'>WORKINGDAYS2</a></td><td>Retrieves the working days of Timer2</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?name=NEXT'>NEXT</a></td><td>Retrieves the date and time of next start.</td></tr>";
+  s +=       "</table>";
+  s +=     "</div>";
+#ifdef WITH_AUTOMATION
+  s +=     "<br>";
+  s +=     "AUTOMATION:<br>";
+  s +=     "<div class='box'>";
+  s +=       "Pre-defined automation commands for the mower</br>";
+  s +=       "Set Timer1Start to e.g. start <span class='cmdDays'>every day</span> at <span class='cmdHour'>10</span>:<span class='cmdMinute'>00</span> (http://" + ipAdress + "/send?cmd=02-06-08-02-01-<span class='cmdHour'>0A</span>-00-<span class='cmdMinute'>00</span>-<span class='cmdDays'>7F</span>-A0-05-DE-03)</br>";
+  s +=       "Set Timer1Stop to e.g. stop <span class='cmdDays'>every day</span> at <span class='cmdHour'>10</span>:<span class='cmdMinute'>10</span> (http://" + ipAdress + "/send?cmd=02-06-08-02-81-<span class='cmdHour'>0A</span>-00-<span class='cmdMinute'>0A</span>-<span class='cmdDays'>7F</span>-A0-05-D3-03)</br>";
+  s +=       "Set Timer2Start to e.g. start at <span class='cmdHour'>10</span>:<span class='cmdMinute'>10</span> - <span class='cmdDays'>without days</span> (http://" + ipAdress + "/send?cmd=02-06-08-02-02-<span class='cmdHour'>0A</span>-00-<span class='cmdMinute'>0A</span>-<span class='cmdDays'>00</span>-A0-05-B3-03)</br>";
+  s +=       "Set Timer2Stop to e.g. stop <span class='cmdDays'>every day</span> at <span class='cmdHour'>20</span>:<span class='cmdMinute'>00</span> (http://" + ipAdress + "/send?cmd=02-06-08-02-82-<span class='cmdHour'>14</span>-00-<span class='cmdMinute'>00</span>-<span class='cmdDays'>7F</span>-A0-05-46-03)</br>";
+  s +=       "The mower has to be set to AUTO and started manually. When the mower wakes up because of Timer1Start, it is automatically send to STOP via this program and waits for further commands.</br>";
+  s +=       "When no command was sent from an automation (e.g. FHEM, OpenHAB, Loxone, etc.), the mower is set to START after the end of Timer1End.</br>";
+  s +=       "To start the mower, use the command 'MOWTODAY'. If the mower is active and it starts raining, let your automation send 'MOWNEXTDAY' to set Timer2Start to the following day. The mower returns and starts the next day. When the mower returns to charge and Timer2End passes, the command 'ABORTDAYS' is executed to remove all workingdays of Timer2.</br>";
+  s +=       "The commands are executed via http://" + ipAdress + "/send?automation=MOWTODAY";
+  s +=       "<table class='status'>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?automation=MOWTODAY'>MOWTODAY</a></td><td>Sets day of Timer2Start to today.</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?automation=MOWNEXTDAY'>MOWNEXTDAY</a></td><td>Sets day of Timer2Start to tomorrow.</td></tr>";
+  s +=         "<tr><td><a href='http://" + ipAdress + "/send?automation=ABORTDAYS'>ABORTDAYS</a></td><td>Removes all days of Timer2Start.</td></tr>";
+  s +=       "</table>";
+  s +=     "</div>";
+#endif
+  s +=   "</div>";
+  s += "</body>";
+  return s;
+}
+
+String GetLogContent()
+{
+  String content = "";
+  for (int i = 1; i <= logs; i++)
+  {
+    int index = logCounter - i;
+    if (index < 0)
+      index += logs;
+    String text = logArrayMsg[index];
+    String date = logArrayDate[index];
+    if (text.length() > 0)
+    {
+      if (content.length() > 0)
+        content += "<br>";
+      content += "<div class='logDate'>" + date + "</div><div class='logMsg'>" + text + "</div>";
+    }
+  }
+  return content;
+}
+
+String GetLastLogEntry()
+{
+  String logEntry = "no entry";
+  int index = logCounter - 1;
+  if (index < 0)
+    index += logs;
+  String text = logArrayMsg[index];
+  String date = logArrayDate[index];
+  if (text.length() > 0)
+    logEntry = "(" + date + ") " + text;
+
+  return logEntry;
+}
+
+String GetJson()
+{
+  String s = "";
+  s += "{";
+  s += "\"mower\":\"" + mower + "\",";
+  s += "\"mode\":\"" + mode + "\",";
+  s += "\"cover\":\"" + cover + "\",";
+  s += "\"Time\":\"" + Time + "\",";
+  s += "\"date\":\"" + date + "\",";
+  s += "\"nextstart\":\"" + nextstart + "\",";
+  s += "\"timer1\":\"" + timer1 + "\",";
+  s += "\"workingdays1\":\"" + workingdays1 + "\",";
+  s += "\"timer2\":\"" + timer2 + "\",";
+  s += "\"workingdays2\":\"" + workingdays2 + "\",";
+  s += "\"batterycharge\":\"" + batterycharge + "\",";
+  s += "\"batteryvoltage\":\"" + batteryvoltage + "\",";
+  s += "\"batterycapacity\":\"" + batterycapacity + "\",";
+  s += "\"flowingcurrent\":\"" + flowingcurrent + "\",";
+  s += "\"temperature\":\"" + temperature + "\",";
+  s += "\"workinghours\":\"" + workinghours + "\",";
+  s += "\"lastlogentry\":\"" + GetLastLogEntry() + "\",";
+  s += "\"ipAdress\":\"" + ipAdress + "\",";
+  s += "\"rssi\":\"" + rssi + "\",";
+  s += "\"ssid\":\"" + ssid + "\"";
+  s += "}";
+  return s;
+}
+
+//***********************************************************************
+//*** test  *************************************************************
+//***********************************************************************
+
+String GetTestResponse(String name)
+{
+  if (name.equals("HOME") || name.equals("MAN") || name.equals("AUTO"))
+    return "02-0F-03-00-00-00-E7-03";
+  else if (name.equals("STATUS"))
+  {
+    int randNumber = random(0, 9);
+    if (randNumber == 0)
+      return "02-13-17-00-01-00-05-11-00-00-00-00-00-00-00-BA-C9-01-00-5B-03-25-00-00-B6-06-E9-03";
+    if (randNumber == 1)
+      return "02-13-17-00-02-02-06-11-00-00-00-00-00-00-00-BA-C9-01-00-5B-03-25-00-00-B6-06-C0-03";
+    if (randNumber == 2)
+      return "02-13-17-00-02-01-06-11-00-00-00-00-00-00-00-BA-C9-01-00-5B-03-25-00-00-B6-06-E7-03";
+    if (randNumber == 3)
+      return "02-13-17-00-02-01-07-11-00-00-00-00-00-00-00-BA-C9-01-00-5B-03-25-00-00-B6-06-2C-03";
+    if (randNumber == 4)
+      return "02-13-17-00-04-00-05-11-00-00-00-00-00-00-00-BA-C9-01-00-5B-03-25-00-00-B6-06-10-03";
+    if (randNumber == 5)
+      return "02-13-17-00-05-00-05-11-00-00-00-00-00-00-00-BA-C9-01-00-5B-03-25-00-00-B6-06-87-03";
+    if (randNumber == 6)
+      return "02-13-17-00-07-00-05-13-00-00-00-00-00-00-00-BA-C9-01-00-5B-03-25-00-00-B6-06-1B-03";
+    if (randNumber == 7)
+      return "02-13-17-00-07-00-05-11-00-00-00-00-00-00-00-BA-C9-01-00-5B-03-25-00-00-B6-06-B0-03";
+    if (randNumber == 8)
+      return "";
+  }
+  else if (name.equals("BATTERY"))
+    return "02-15-15-00-EB-4A-94-02-D6-FF-B4-00-B0-04-00-00-00-00-00-00-0C-FE-00-00-29-03";
+  else if (name.equals("COVER"))
+    return "02-15-04-00-00-01-00-6B-03";
+  else if (name.equals("CLOCK"))
+    return "02-03-04-00-15-0C-2A-29-03";
+  else if (name.equals("DATE"))
+    return "02-03-06-00-DF-07-0C-12-02-86-03";
+  else if (name.equals("TIMER1START"))
+    return "02-07-09-00-01-11-00-05-35-3E-01-01-DF-03";
+  else if (name.equals("TIMER1STOP"))
+    return "02-07-09-00-81-13-00-0A-35-3E-01-01-58-03";
+  else if (name.equals("TIMER2START"))
+  {
+    int randNumber = random(0, 2);
+    if (randNumber == 0)
+      return "02-07-09-00-02-12-00-00-35-3E-01-01-8F-03";
+    else
+      return "";
+  }
+  else if (name.equals("TIMER2STOP"))
+    return "02-07-09-00-82-13-00-00-35-3E-01-01-20-03";
+  else if (name.equals("WORKINGDAYS1"))
+    return "02-07-09-00-01-11-00-05-35-3E-01-01-DF-03";
+  else if (name.equals("WORKINGDAYS2"))
+    return "02-07-09-00-02-11-00-05-35-3E-01-01-1A-03";
+  else if (name.equals("NEXT"))
+    return "02-07-0A-00-00-00-00-00-00-70-BC-C8-55-C5-03";
+  else if (name.equals("WAKEUP"))
+    return "Wakeup signal sent...";
+  else if (name.equals("RESET"))
+    return "Module reset command sent...Rebooting...";
+  else if (name.equals("CLEARCREDS"))
+    return "Wifi Credentials cleared... Rebooting...";
+  else
+    return "";
+
+  return "";
+}
+
+//***********************************************************************
+//*** MQTT  *************************************************************
+//***********************************************************************
+
+#ifdef WITH_MQTT
+void callback(char *gottopic, byte *payload, unsigned int length)
+{
+  String str = String();
+  String("0").toCharArray(buf, sizeof(buf));
+  for (int i = 0; i < length; i++)
+  {
+    str += (char)payload[i];
+  }
+  String mytopic = (main_topic + "/cmnd/home");
+  mytopic.toCharArray(topic, 50);
+  if (strcmp(gottopic, topic) == 0 & str == "1")
+  {
+    ExecuteSerialCommand("HOME");
+    client.publish(topic, buf);
+  }
+  mytopic = (main_topic + "/cmnd/manual");
+  mytopic.toCharArray(topic, 50);
+  if (strcmp(gottopic, topic) == 0 & str == "1")
+  {
+    ExecuteSerialCommand("MAN");
+    client.publish(topic, buf);
+  }
+  mytopic = (main_topic + "/cmnd/automatic");
+  mytopic.toCharArray(topic, 50);
+  if (strcmp(gottopic, topic) == 0 & str == "1")
+  {
+    ExecuteSerialCommand("AUTO");
+    client.publish(topic, buf);
+  }
+  mytopic = (main_topic + "/cmnd/start");
+  mytopic.toCharArray(topic, 50);
+  if (strcmp(gottopic, topic) == 0 & str == "1")
+  {
+    ExecuteSerialCommand("START");
+    client.publish(topic, buf);
+  }
+  mytopic = (main_topic + "/cmnd/stop");
+  mytopic.toCharArray(topic, 50);
+  if (strcmp(gottopic, topic) == 0 & str == "1")
+  {
+    ExecuteSerialCommand("STOP");
+    client.publish(topic, buf);
+  }
+}
+
+void reconnect()
+{
+  if(!client.connected())
+  {
+    String availability_topic = main_topic + "/status/availability";
+    // Attempt to connect
+    if (client.connect(host, mqtt_user, mqtt_password, availability_topic.c_str(), 0, true, "offline"))
+    {
+      // Once connected, publish online
+      client.publish(availability_topic.c_str(), "online", true);
+
+      // Once connected, publish an announcement...
+      publish_discovery_configs();
+      publish_mower_values();
+      // ... and resubscribe
+      String mytopic = (main_topic + "/cmnd/home");
+      mytopic.toCharArray(topic, 50);
+      client.subscribe(topic);
+      mytopic = (main_topic + "/cmnd/manual");
+      mytopic.toCharArray(topic, 50);
+      client.subscribe(topic);
+      mytopic = (main_topic + "/cmnd/automatic");
+      mytopic.toCharArray(topic, 50);
+      client.subscribe(topic);
+      mytopic = (main_topic + "/cmnd/start");
+      mytopic.toCharArray(topic, 50);
+      client.subscribe(topic);
+      mytopic = (main_topic + "/cmnd/stop");
+      mytopic.toCharArray(topic, 50);
+      client.subscribe(topic);
+    }
+  }
+}
+
+void publish_mower_values()
+{
+  ipAdress = WiFi.localIP().toString();
+  ipAdress.toCharArray(buf, sizeof(buf));
+  String mytopic = (main_topic + "/stat/ipaddress");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(mower).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/status");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(mode).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/mode");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(cover).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/cover");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(nextstart).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/nextstart");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(timer1).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/timer1");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(timer2).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/timer2");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(batterycharge).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/batterycharge");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(batteryvoltage).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/batteryvoltage");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(batterycapacity).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/batterycapacity");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(flowingcurrent).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/flowingcurrent");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(temperature).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/temperature");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(workinghours).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/workinghours");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(rssi).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/rssi");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(ssid).toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/ssid");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+
+  String(String(PrgVer) + " (" + String(__DATE__ " " __TIME__) + ")").toCharArray(buf, sizeof(buf));
+  mytopic = (main_topic + "/stat/firmware");
+  mytopic.toCharArray(topic, sizeof(topic));
+  client.publish(topic, buf);
+}
+
+void publish_discovery_configs()
+{
+  // Device info shared by all entities - using ChipId for uniqueness
+#if defined(ESP8266)
+  String chipId = String(ESP.getChipId());
+  const char *boardModel = "ESP8266";
+#elif defined(ESP32)
+  String chipId = String(ESP.getEfuseMac(), HEX);
+  const char *boardModel = "ESP32";
+#endif
+  String dev = ",\"dev\":{\"ids\":[\"automower_" + chipId + "\"],\"name\":\"Mower\",\"mf\":\"Husqvarna\",\"mdl\":\"" + boardModel + "\"}";
+  String base_topic = "homeassistant/";
+
+  // Helper variables to reduce payload size
+  String stat_prefix = ",\"stat_t\":\"" + main_topic + "/stat/";
+  String cmd_prefix = ",\"cmd_t\":\"" + main_topic + "/cmnd/";
+  String avty_prefix = ",\"avty_t\":\"" + main_topic + "/status/availability\"";
+
+  // --- Sensors ---
+
+  // Status
+  client.publish((base_topic + "sensor/" + host + "/status/config").c_str(),
+    ("{\"name\":\"Mower Status\"" + stat_prefix + "status\",\"uniq_id\":\"" + host + "_status\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Mode
+  client.publish((base_topic + "sensor/" + host + "/mode/config").c_str(),
+    ("{\"name\":\"Mower Mode\"" + stat_prefix + "mode\",\"uniq_id\":\"" + host + "_mode\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Cover
+  client.publish((base_topic + "sensor/" + host + "/cover/config").c_str(),
+    ("{\"name\":\"Mower Cover\"" + stat_prefix + "cover\",\"uniq_id\":\"" + host + "_cover\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Next Start
+  client.publish((base_topic + "sensor/" + host + "/nextstart/config").c_str(),
+    ("{\"name\":\"Mower Next Start\"" + stat_prefix + "nextstart\",\"uniq_id\":\"" + host + "_nextstart\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Battery Charge
+  client.publish((base_topic + "sensor/" + host + "/battery/config").c_str(),
+    ("{\"name\":\"Mower Battery\"" + stat_prefix + "batterycharge\",\"unit_of_meas\":\"%\",\"dev_cla\":\"battery\",\"stat_cla\":\"measurement\",\"uniq_id\":\"" + host + "_battery\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Battery Voltage
+  client.publish((base_topic + "sensor/" + host + "/voltage/config").c_str(),
+    ("{\"name\":\"Mower Voltage\"" + stat_prefix + "batteryvoltage\",\"unit_of_meas\":\"V\",\"dev_cla\":\"voltage\",\"stat_cla\":\"measurement\",\"uniq_id\":\"" + host + "_voltage\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Battery Capacity
+  client.publish((base_topic + "sensor/" + host + "/capacity/config").c_str(),
+    ("{\"name\":\"Mower Capacity\"" + stat_prefix + "batterycapacity\",\"unit_of_meas\":\"mAh\",\"stat_cla\":\"measurement\",\"uniq_id\":\"" + host + "_capacity\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Flowing Current
+  client.publish((base_topic + "sensor/" + host + "/current/config").c_str(),
+    ("{\"name\":\"Mower Current\"" + stat_prefix + "flowingcurrent\",\"unit_of_meas\":\"mA\",\"dev_cla\":\"current\",\"stat_cla\":\"measurement\",\"uniq_id\":\"" + host + "_current\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Temperature
+  client.publish((base_topic + "sensor/" + host + "/temp/config").c_str(),
+    ("{\"name\":\"Mower Temperature\"" + stat_prefix + "temperature\",\"unit_of_meas\":\"\\u00b0C\",\"dev_cla\":\"temperature\",\"stat_cla\":\"measurement\",\"uniq_id\":\"" + host + "_temp\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Working Hours
+  client.publish((base_topic + "sensor/" + host + "/hours/config").c_str(),
+    ("{\"name\":\"Mower Working Hours\"" + stat_prefix + "workinghours\",\"unit_of_meas\":\"h\",\"stat_cla\":\"measurement\",\"uniq_id\":\"" + host + "_hours\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // RSSI
+  client.publish((base_topic + "sensor/" + host + "/rssi/config").c_str(),
+    ("{\"name\":\"Mower RSSI\"" + stat_prefix + "rssi\",\"unit_of_meas\":\"dBm\",\"dev_cla\":\"signal_strength\",\"stat_cla\":\"measurement\",\"uniq_id\":\"" + host + "_rssi\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // IP address
+  client.publish((base_topic + "sensor/" + host + "/ipaddress/config").c_str(),
+    ("{\"name\":\"Mower IP Address\"" + stat_prefix + "ipaddress\",\"ent_cat\":\"diagnostic\",\"uniq_id\":\"" + host + "_ipaddress\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Firmware
+  client.publish((base_topic + "sensor/" + host + "/firmware/config").c_str(),
+    ("{\"name\":\"Mower Firmware\"" + stat_prefix + "firmware\",\"ent_cat\":\"diagnostic\",\"uniq_id\":\"" + host + "_firmware\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // --- Buttons (Commands) ---
+
+  // Start
+  client.publish((base_topic + "button/" + host + "/start/config").c_str(),
+    ("{\"name\":\"Mower Start\"" + cmd_prefix + "start\",\"payload_press\":\"1\",\"uniq_id\":\"" + host + "_start\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Stop
+  client.publish((base_topic + "button/" + host + "/stop/config").c_str(),
+    ("{\"name\":\"Mower Stop\"" + cmd_prefix + "stop\",\"payload_press\":\"1\",\"uniq_id\":\"" + host + "_stop\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Home
+  client.publish((base_topic + "button/" + host + "/home/config").c_str(),
+    ("{\"name\":\"Mower Home\"" + cmd_prefix + "home\",\"payload_press\":\"1\",\"uniq_id\":\"" + host + "_home\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Auto
+  client.publish((base_topic + "button/" + host + "/auto/config").c_str(),
+    ("{\"name\":\"Mower Auto Mode\"" + cmd_prefix + "automatic\",\"payload_press\":\"1\",\"uniq_id\":\"" + host + "_auto\"" + avty_prefix + dev + "}").c_str(), true);
+
+  // Manual
+  client.publish((base_topic + "button/" + host + "/manual/config").c_str(),
+    ("{\"name\":\"Mower Manual Mode\"" + cmd_prefix + "manual\",\"payload_press\":\"1\",\"uniq_id\":\"" + host + "_manual\"" + avty_prefix + dev + "}").c_str(), true);
+}
+#endif
