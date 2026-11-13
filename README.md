@@ -14,6 +14,7 @@ Firmware for ESP8266 and ESP32 modules that connects a Gardena / Husqvarna G3 mo
 - Report mower power-outage status and expose firmware and network diagnostics.
 
 ### Links
+- Forked from: https://gitlab.com/nbrgmn/wall-e-esp8266-automower
 - https://www.loxwiki.eu/pages/viewpage.action?pageId=48137811
 - https://www.mikrocontroller.net/topic/304526#6198142
 
