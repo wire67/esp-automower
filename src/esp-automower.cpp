@@ -6,27 +6,6 @@
 //***  Programm-Version  ************************************************
 //***********************************************************************
 
-// #define PrgVer 1.00  // Vorlage ESP8266_Robi_v2.ino
-// #define PrgVer 1.01  // Refactoring
-// #define PrgVer 1.02  // Web Interface HTML
-// #define PrgVer 1.03  // Predefined commands
-// #define PrgVer 1.04  // Compilable version
-// #define PrgVer 1.05  // Responsive web interface
-// #define PrgVer 1.06  // Added timer, working days, next start
-// #define PrgVer 1.07  // Validate command response (CRC8) and use timer
-// #define PrgVer 1.08  // Logging
-// #define PrgVer 1.09  // Modifiable timer settings
-// #define PrgVer 1.10  // WebUpdater
-// #define PrgVer 1.11  // Revise battery status
-// #define PrgVer 1.12  // Revise timer status
-// #define PrgVer 1.13  // Use DHCP instead of static ip
-// #define PrgVer 1.14  // Insert refresh button, reactivate and modify timer
-// #define PrgVer 1.15  // add OTA, add MQTT, add wifiMulti, add links on index page
-// #define PrgVer 1.16  // Add mowerName, mowerType, new error codes for Gardena R70li, AutoCrc option, workdays2, modify timer from website, automation extension, lastLogEntry in JSON
-// #define PrgVer 1.17  // Optimize automation program (remove workingdays of Timer2 at end of Timer2), update all values at start, add links of commands to webpage
-// #define PrgVer 1.18  // Fix bug (only remove workingdays of Timer2 at end of Timer2 when mower is charging) (Thanks to Rob R.)
-// #define PrgVer 1.19  // Fix bug (temperature >25,5C not shown), added battery charge in percent, added workinghours (Thanks to jackmaniels)
-// #define PrgVer 1.20  // Included WLAN manager, Relay reset switch on D1 (Wemos relay board) and reset procedure for the esp board (RCOOLEN)
 #define PrgVer 1.22  // Added Power Outage status (hex 08), Added mode sensor (auto/man/home), support ESP32, support for Home Assistant, set NTP time once
 
 #if defined(ESP8266)
@@ -279,7 +258,7 @@ void setup()
   mowerSerial.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
 #endif
 
-  // WiFiManager, Local intialization. Once its business is done, there is no need to keep it around
+  // WiFiManager, Local initialization. Once its business is done, there is no need to keep it around
   WiFiManager wm;
 
   // reset settings - wipe stored credentials for testing
@@ -730,7 +709,7 @@ String executeAutomationCommands(String cmdName, String &output)
     cmd = setCmdCrC(cmd);
     output += "CMD: " + cmd + "\r\n";
     output += "Response: " + ExecuteSerialCommand(cmd, "MOWNEXTDAY") + "\r\n";
-    Log("AUTOMATION set Timer2 to all workingsdays (Mo-Su)");
+    Log("AUTOMATION set Timer2 to all working days (Mo-Su)");
   }
   else if (cmdName.equals("ABORTDAYS"))
   {
@@ -1834,7 +1813,7 @@ String GetHtmlBodyWeb(String logcontent)
   s +=         "<tr><td>Cover</td><td>%%cover%%</td></tr>";
   s +=         "<tr><td>Time</td><td>%%time%%</td></tr>";
   s +=         "<tr><td>Date</td><td>%%date%%</td></tr>";
-  s +=         "<tr><td>Workinghours</td><td>%%workinghours%%</td></tr>";
+  s +=         "<tr><td>Working hours</td><td>%%workinghours%%</td></tr>";
   s +=         "<tr><td>IP</td><td>%%ip%%</td></tr>";
   s +=         "<tr><td>Wifi RSSI</td><td>%%rssi%% dB</td></tr>";
   s +=         "<tr><td>Wifi SSID</td><td>%%ssid%%</td></tr>";
@@ -1897,7 +1876,7 @@ String GetHtmlBodyRoot()
   s +=         "<tr><td>Web interface</td><td><a href=http://" + ipAdress + "/web>http://" + ipAdress + "/web</a></td></tr>";
   s +=         "<tr><td>Json output </td><td><a href=http://" + ipAdress + "/json>http://" + ipAdress + "/json</a></td></tr>";
   s +=         "<tr><td>Send hex command</td></td><td>http://" + ipAdress + "/send?cmd=A0-B1-C2-D3-E4</td></tr>";
-  s +=         "<tr><td>Send hex command with auto CRC</td></td><td>http://" + ipAdress + "/send?cmdAutoCrc=A0-B1-C2-D3-E4 (without last 2 bytes - CRC and endbyte)</td></tr>";
+  s +=         "<tr><td>Send hex command with auto CRC</td></td><td>http://" + ipAdress + "/send?cmdAutoCrc=A0-B1-C2-D3-E4 (without last 2 bytes - CRC and end byte)</td></tr>";
   s +=         "<tr><td>Send command by name</td><td>http://" + ipAdress + "/send?name=HOME</td></tr>";
   s +=         "<tr><td>Wifi strength</td><td><a href=http://" + ipAdress + "/rssi>http://" + ipAdress + "/rssi</a></td></tr>";
   s +=         "<tr><td>Program version</td><td><a href=http://" + ipAdress + "/prgver>http://" + ipAdress + "/prgver</a></td></tr>";
