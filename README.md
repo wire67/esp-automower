@@ -1,6 +1,17 @@
 # wall-e-esp8266-automower
 
-Firmware for an ESP8266 module that connects a Gardena / Husqvarna G3 mower to Wi-Fi.
+Firmware for ESP8266 and ESP32 modules that connects a Gardena / Husqvarna G3 mower to Wi-Fi.
+
+### Features
+- Control the mower over its 115200 baud UART, including start, stop, home, and automatic or manual mode commands.
+- View mower status, operating mode, cover state, battery measurements, temperature, working hours, and schedules in a mobile-friendly web interface.
+- Configure mower timers and working days, and inspect recent logs through the web interface.
+- Read status as JSON and send named or raw mower commands through HTTP endpoints.
+- Integrate with MQTT, including remote mower commands, telemetry, availability, and automatic Home Assistant entity discovery.
+- Update firmware wirelessly using OTA; ESP8266 also supports the web updater.
+- Provision Wi-Fi with WiFiManager and use mDNS and NTP time synchronization.
+- On ESP32, broadcast an Automower Find My-compatible BLE advertisement.
+- Report mower power-outage status and expose firmware and network diagnostics.
 
 ### Links
 - https://www.loxwiki.eu/pages/viewpage.action?pageId=48137811
