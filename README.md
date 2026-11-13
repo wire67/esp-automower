@@ -1,4 +1,4 @@
-# wall-e-esp8266-automower
+# ESP-Automower (ex. wall-e-esp8266-automower)
 
 Firmware for ESP8266 and ESP32 modules that connects a Gardena / Husqvarna G3 mower to Wi-Fi.
 
